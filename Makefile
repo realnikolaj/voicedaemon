@@ -1,17 +1,26 @@
-.PHONY: build test lint check smoke
-
-TAGS ?= noapm
+.PHONY: build build-noapm test test-noapm lint lint-noapm check check-noapm smoke
 
 build:
-	go build -tags $(TAGS) ./cmd/voicedaemon/
+	go build ./cmd/voicedaemon/
+
+build-noapm:
+	go build -tags noapm ./cmd/voicedaemon/
 
 test:
-	go test -race -tags $(TAGS) ./...
+	go test -race ./...
+
+test-noapm:
+	go test -race -tags noapm ./...
 
 lint:
 	golangci-lint run
 
+lint-noapm:
+	golangci-lint run --build-tags noapm
+
 check: build test lint
 
-smoke: build
+check-noapm: build-noapm test-noapm lint-noapm
+
+smoke: build-noapm
 	bash scripts/smoke-test.sh

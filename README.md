@@ -1,6 +1,6 @@
 # voicedaemon
 
-Standalone STT+TTS daemon in Go. Replaces a Python voice daemon with a single static binary featuring portaudio capture, go-webrtc-apm (noise suppression, AGC, VAD, echo cancellation), Speaches STT, and dual TTS backends.
+Standalone STT+TTS daemon in Go. Replaces a Python voice daemon with a single static binary featuring portaudio capture, WebRTC audio processing (noise suppression, AGC, VAD, echo cancellation), Speaches STT, and dual TTS backends.
 
 ## Architecture
 
@@ -42,18 +42,21 @@ Standalone STT+TTS daemon in Go. Replaces a Python voice daemon with a single st
 # macOS
 brew install portaudio
 
-# Optional: for full APM support (not required — noapm stub works without it)
-# brew install webrtc-audio-processing
+# Required for real APM (noise suppression, AGC, echo cancellation):
+brew install webrtc-audio-processing
+
+# Verify webrtc-audio-processing is available:
+pkg-config --cflags --libs webrtc-audio-processing-2
 ```
 
 ### Build
 
 ```bash
-# Standard build (without APM — uses no-op stub)
+# Default build — real WebRTC APM (requires webrtc-audio-processing-2):
 make build
 
-# With APM (requires libwebrtc-audio-processing)
-make build TAGS=""
+# Fallback build — no-op stub with energy-based VAD (no webrtc dependency):
+make build-noapm
 ```
 
 ### Run
@@ -63,6 +66,19 @@ make build TAGS=""
 # or with options:
 ./voicedaemon --port 5111 --debug
 ```
+
+## APM Build Modes
+
+voicedaemon supports two build modes:
+
+| Mode | Build Tag | APM | VAD | AEC | Dependency |
+|------|-----------|-----|-----|-----|------------|
+| **Real** (default) | *(none)* | WebRTC NS+AGC2+HPF | WebRTC voice detection | AEC3 | `webrtc-audio-processing-2` |
+| **Stub** | `noapm` | pass-through | RMS energy threshold | none | *(none)* |
+
+The real APM wraps `libwebrtc-audio-processing-2` via a C++ shim (`internal/capm/`).
+The C++ wrapper (`apm_wrapper.h`, `apm_wrapper.cpp`) provides a flat C API around the
+WebRTC `AudioProcessing` module, adapted from the [osog](https://github.com/realnikolaj/osog) project.
 
 ## Configuration
 
@@ -151,9 +167,18 @@ curl localhost:5111/health
 ## Build Commands
 
 ```bash
-make build    # Build binary (-tags noapm)
-make test     # Run tests with race detector
-make lint     # Run golangci-lint
-make check    # All of the above
-make smoke    # Build + smoke test
+make build        # Build binary (real APM)
+make build-noapm  # Build binary (stub, no webrtc dependency)
+make test         # Run tests with race detector (real APM)
+make test-noapm   # Run tests with race detector (stub)
+make lint         # Run golangci-lint (real APM)
+make lint-noapm   # Run golangci-lint (stub)
+make check        # All of the above (real APM)
+make check-noapm  # All of the above (stub)
+make smoke        # Build stub + smoke test
 ```
+
+## Attribution
+
+The WebRTC C++ wrapper (`internal/capm/apm_wrapper.h`, `internal/capm/apm_wrapper.cpp`)
+is adapted from the [osog](https://github.com/realnikolaj/osog) project.

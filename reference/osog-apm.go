@@ -1,4 +1,4 @@
-//go:build !noapm
+//go:build ignore
 
 package audio
 
