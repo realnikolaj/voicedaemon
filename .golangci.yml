@@ -1,4 +1,7 @@
 version: "2"
+run:
+  build-tags:
+    - noapm
 linters:
   enable:
     - errcheck
@@ -6,8 +9,10 @@ linters:
     - staticcheck
     - unused
     - ineffassign
-    - gofmt
   settings:
     errcheck:
       exclude-functions:
         - (io.Closer).Close
+formatters:
+  enable:
+    - gofmt
