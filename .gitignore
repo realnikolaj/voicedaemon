@@ -1,5 +1,58 @@
-voicedaemon
+# claude
+.claude/
+
+# Structurizr
+!build/site
+
+# archives
+*.zip
+
+# git
+.prologue
+.gitignore
+.github
+# Project
+.ARCHIVED/
+.DS_Store
+docs/archive
+
+# Go
+/bin/
+vendor/
 *.exe
+*.exe~
+*.dll
+*.so
+*.dylib
 *.test
 *.out
-.DS_Store
+coverage.out
+
+# macOS
+._*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Project artifacts
+/dist/
+/tmp/
+*.log
+
+# Environment files (keep .env.example)
+.env
+.env.local
+
+# Structurizr
+docs/site/
+!docs/reports/*
+/osog
+.speaches
+.speaches/
+.python-version
+build/site/*
+**/.DS_Store
