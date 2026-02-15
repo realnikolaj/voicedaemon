@@ -1,0 +1,13 @@
+version: "2"
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - gofmt
+  settings:
+    errcheck:
+      exclude-functions:
+        - (io.Closer).Close
