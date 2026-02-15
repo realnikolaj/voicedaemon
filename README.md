@@ -1,184 +1,144 @@
 # voicedaemon
 
-Standalone STT+TTS daemon in Go. Replaces a Python voice daemon with a single static binary featuring portaudio capture, WebRTC audio processing (noise suppression, AGC, VAD, echo cancellation), Speaches STT, and dual TTS backends.
+**v0.2.7** — Standalone STT+TTS daemon in Go. Single binary, portaudio I/O, dual TTS backends, Unix socket STT, HTTP API.
 
-## Architecture
+## Build Modes
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                     voicedaemon                          │
-│                                                          │
-│  ┌──────────┐    ┌──────────┐    ┌──────────────────┐   │
-│  │   Mic    │───▶│   APM    │───▶│  VAD State       │   │
-│  │ (48kHz)  │    │ (NS/AGC/ │    │  Machine         │   │
-│  │PortAudio │    │  VAD/AEC)│    │ IDLE→LISTEN→     │   │
-│  └──────────┘    └────┬─────┘    │ RECORD→PROCESS   │   │
-│                       │          └────────┬─────────┘   │
-│                       │                   │              │
-│  ┌──────────┐    ┌────┴─────┐    ┌────────▼─────────┐   │
-│  │ Speaker  │◀───│  AEC     │    │  STT Client      │   │
-│  │ (48kHz)  │    │ Render   │    │  (Speaches)      │   │
-│  │PortAudio │    │ Path     │    │  48k→16k→WAV     │   │
-│  └────▲─────┘    └──────────┘    └────────┬─────────┘   │
-│       │                                   │              │
-│  ┌────┴─────────────────┐        ┌────────▼─────────┐   │
-│  │  TTS Queue           │        │  Unix Socket     │   │
-│  │  (latest-wins drain) │        │  Server          │   │
-│  │  Speaches + PocketTTS│        │  (/tmp/voice-    │   │
-│  └──────────────────────┘        │   daemon.sock)   │   │
-│                                  └──────────────────┘   │
-│  ┌──────────────────────┐                               │
-│  │  HTTP Server (:5111) │                               │
-│  │  /speak /stop /health│                               │
-│  └──────────────────────┘                               │
-└─────────────────────────────────────────────────────────┘
-```
+| Mode | Build Tag | Output Rate | APM | AEC | Dependency |
+|------|-----------|-------------|-----|-----|------------|
+| **noapm** (recommended) | `-tags noapm` | 24kHz (native Kokoro) | energy VAD | none | portaudio only |
+| **Real APM** | *(none)* | 48kHz (AEC symmetry) | WebRTC NS+AGC2+VAD | AEC3 | `webrtc-audio-processing-2` |
 
-## Installation
+## Interfaces
 
-### System Dependencies
+| Interface | Protocol | Purpose |
+|-----------|----------|---------|
+| HTTP `:5111` | REST | TTS playback (`/speak`, `/stop`, `/health`) |
+| Unix socket | Line protocol | STT recording (`start`, `stop`, `cancel`, `status`) |
+
+## TTS Backends
+
+| Backend | Engine | Voices | Sample Rate |
+|---------|--------|--------|-------------|
+| **Speaches** (Kokoro) | `speaches-ai/Kokoro-82M-v1.0-ONNX` | `af_heart`, `af_bella`, `am_adam` | 24000 Hz |
+| **Speaches** (Piper/GLaDOS) | `piper`, `glados` | model-specific | 22050 Hz |
+| **PocketTTS** | `piper` | `alba`, `lessac` | 24000 Hz |
+
+## Prerequisites
 
 ```bash
-# macOS
+# Go 1.25+
+go version
+
+# portaudio (required)
 brew install portaudio
 
-# Required for real APM (noise suppression, AGC, echo cancellation):
+# webrtc-audio-processing (only for real APM build)
 brew install webrtc-audio-processing
-
-# Verify webrtc-audio-processing is available:
 pkg-config --cflags --libs webrtc-audio-processing-2
 ```
 
-### Build
+## Install
 
 ```bash
-# Default build — real WebRTC APM (requires webrtc-audio-processing-2):
-make build
-
-# Fallback build — no-op stub with energy-based VAD (no webrtc dependency):
-make build-noapm
+go install -tags noapm github.com/realnikolaj/voicedaemon/cmd/voicedaemon@latest
 ```
 
-### Run
+## Usage
 
 ```bash
-./voicedaemon
-# or with options:
-./voicedaemon --port 5111 --debug
+# Start with defaults (Speaches on localhost:34331)
+voicedaemon --debug
+
+# Custom Speaches URL
+voicedaemon --speaches-url http://192.168.1.10:34331 --debug
+
+# Version
+voicedaemon --version
 ```
 
-## APM Build Modes
-
-voicedaemon supports two build modes:
-
-| Mode | Build Tag | APM | VAD | AEC | Dependency |
-|------|-----------|-----|-----|-----|------------|
-| **Real** (default) | *(none)* | WebRTC NS+AGC2+HPF | WebRTC voice detection | AEC3 | `webrtc-audio-processing-2` |
-| **Stub** | `noapm` | pass-through | RMS energy threshold | none | *(none)* |
-
-The real APM wraps `libwebrtc-audio-processing-2` via a C++ shim (`internal/capm/`).
-The C++ wrapper (`apm_wrapper.h`, `apm_wrapper.cpp`) provides a flat C API around the
-WebRTC `AudioProcessing` module, adapted from the [osog](https://github.com/realnikolaj/osog) project.
-
-## Configuration
-
-All flags can be set via CLI flags or environment variables.
-
-| Flag | Env Var | Default | Description |
-|------|---------|---------|-------------|
-| `--port` | `DAEMON_PORT` | `5111` | HTTP server port |
-| `--socket-path` | `STT_SOCKET_PATH` | `/tmp/voice-daemon.sock` | Unix socket path |
-| `--speaches-url` | `SPEACHES_URL` | `http://localhost:34331` | Speaches server URL |
-| `--pocket-tts-url` | `POCKET_TTS_URL` | `http://localhost:49112` | PocketTTS server URL |
-| `--stt-url` | `STT_URL` | `http://localhost:34331` | STT server URL |
-| `--stt-model` | `STT_MODEL` | `deepdml/faster-whisper-large-v3-turbo-ct2` | STT model |
-| `--stt-language` | `STT_LANGUAGE` | `en` | STT language |
-| `--speaches-model` | `SPEACHES_MODEL` | `speaches-ai/Kokoro-82M-v1.0-ONNX` | Speaches TTS model |
-| `--speaches-voice` | `SPEACHES_VOICE` | `af_heart` | Speaches TTS voice |
-| `--pocket-voice` | `POCKET_TTS_VOICE` | `alba` | PocketTTS voice |
-| `--debug` | `VOICEDAEMON_DEBUG` | `false` | Enable debug logging |
-
-## Sample Rate Topology
-
-```
-portaudio mic capture        → 48000 Hz
-APM processing               → 48000 Hz
-Speaches STT input           → 16000 Hz (resampled from 48kHz)
-Speaches TTS output (Kokoro) → 24000 Hz (resampled to 48kHz)
-Speaches TTS output (Piper)  → 22050 Hz (resampled to 48kHz)
-PocketTTS output             → 24000 Hz (resampled to 48kHz)
-portaudio speaker playback   → 48000 Hz
-```
-
-## Unix Socket Protocol
-
-The daemon listens on a Unix socket compatible with Hammerspoon integration.
-
-```
-Client → Server:
-  "start\n"    → "started\n"     Begin recording. Connection stays open.
-  "stop\n"     → "<transcript>\n" Stop recording, return accumulated text.
-  "cancel\n"   → "cancelled\n"   Discard recording.
-  "status\n"   → "idle\n" | "listening\n" | "recording\n" | "processing\n"
-
-Server → Client (push during active session):
-  "transcript:<text>\n"          Sent on each utterance completion.
-```
-
-## HTTP API
-
-### POST /speak
-
-Enqueue text for TTS playback.
+### TTS via HTTP
 
 ```bash
+# Default voice (Kokoro af_heart)
 curl -X POST localhost:5111/speak \
-  -H 'Content-Type: application/json' \
   -d '{"text": "Hello world"}'
-# → {"status":"queued","queue_depth":1,"backend":"speaches"}
 
-# With backend selection:
+# Different voice
+curl -X POST localhost:5111/speak \
+  -d '{"text": "Hello", "voice": "af_bella"}'
+
+# PocketTTS backend
 curl -X POST localhost:5111/speak \
   -d '{"text": "Hello", "backend": "pocket"}'
 
-# With model/voice override:
-curl -X POST localhost:5111/speak \
-  -d '{"text": "Hello", "model": "custom-model", "voice": "alice"}'
-```
-
-### POST /stop
-
-Stop current TTS playback and drain queue.
-
-```bash
+# Stop playback
 curl -X POST localhost:5111/stop
-# → {"status":"stopped"}
-```
 
-### GET /health
-
-Health check with configuration info.
-
-```bash
+# Health check
 curl localhost:5111/health
-# → {"status":"ok","queue_depth":0,"speaches_url":"...","pocket_tts_url":"...","stt_url":"...","stt_socket":"..."}
 ```
 
-## Build Commands
+### STT via Unix Socket
 
 ```bash
-make build        # Build binary (real APM)
-make build-noapm  # Build binary (stub, no webrtc dependency)
-make test         # Run tests with race detector (real APM)
-make test-noapm   # Run tests with race detector (stub)
-make lint         # Run golangci-lint (real APM)
-make lint-noapm   # Run golangci-lint (stub)
-make check        # All of the above (real APM)
-make check-noapm  # All of the above (stub)
-make smoke        # Build stub + smoke test
+# Check status
+echo "status" | socat - UNIX-CONNECT:/tmp/voice-daemon.sock
+
+# Record and transcribe
+echo "start" | socat - UNIX-CONNECT:/tmp/voice-daemon.sock
+# (speak into mic)
+echo "stop" | socat - UNIX-CONNECT:/tmp/voice-daemon.sock
+# → returns transcript
 ```
+
+## Performance
+
+Measured on M1 Mac with Speaches (Kokoro) local:
+
+| Stage | Median |
+|-------|--------|
+| STT transcription | ~130ms |
+| TTS generation | ~400ms |
+| End-to-end (speak → audio out) | ~775ms |
+
+## Configuration
+
+All flags have env var equivalents:
+
+| Flag | Env | Default |
+|------|-----|---------|
+| `--port` | `DAEMON_PORT` | `5111` |
+| `--socket-path` | `STT_SOCKET_PATH` | `/tmp/voice-daemon.sock` |
+| `--speaches-url` | `SPEACHES_URL` | `http://localhost:34331` |
+| `--pocket-tts-url` | `POCKET_TTS_URL` | `http://localhost:49112` |
+| `--stt-url` | `STT_URL` | `http://localhost:34331` |
+| `--stt-model` | `STT_MODEL` | `deepdml/faster-whisper-large-v3-turbo-ct2` |
+| `--stt-language` | `STT_LANGUAGE` | `en` |
+| `--speaches-model` | `SPEACHES_MODEL` | `speaches-ai/Kokoro-82M-v1.0-ONNX` |
+| `--speaches-voice` | `SPEACHES_VOICE` | `af_heart` |
+| `--pocket-voice` | `POCKET_TTS_VOICE` | `alba` |
+| `--debug` | `VOICEDAEMON_DEBUG` | `false` |
+
+## Integration
+
+- **Hammerspoon**: Socket protocol for macOS hotkey → STT recording
+- **Claude MCP**: `voice-mcp.py` bridges Claude Desktop to voicedaemon TTS/STT
+- **osog**: Planned — full desktop voice assistant using voicedaemon as audio backend
+
+## Quality Gates
+
+```bash
+make check        # build + test -race + golangci-lint (real APM)
+make check-noapm  # build + test -race + golangci-lint (noapm)
+```
+
+## Known Issues
+
+- Real APM VAD is deprecated upstream; noapm energy VAD is the working path
+- Single STT session at a time (socket holds state)
+- No echo cancellation in noapm mode — use headphones or mute during TTS
 
 ## Attribution
 
-The WebRTC C++ wrapper (`internal/capm/apm_wrapper.h`, `internal/capm/apm_wrapper.cpp`)
-is adapted from the [osog](https://github.com/realnikolaj/osog) project.
+WebRTC C++ wrapper (`internal/capm/`) adapted from [osog](https://github.com/realnikolaj/osog).

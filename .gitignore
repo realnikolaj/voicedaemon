@@ -56,3 +56,4 @@ docs/site/
 .python-version
 build/site/*
 **/.DS_Store
+voicedaemon
