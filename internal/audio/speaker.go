@@ -4,16 +4,22 @@ import (
 	"encoding/binary"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gordonklaus/portaudio"
 )
 
 const (
-	speakerChunkQueueCap = 200
+	speakerChunkQueueCap = 2000
+
+	// preBufferFrames is the number of frames to accumulate before starting
+	// playback. This absorbs network jitter from HTTP chunked TTS responses.
+	// 20 frames × 10ms/frame = 200ms of audio.
+	preBufferFrames = 20
 )
 
-// Speaker is a persistent portaudio output stream at 48kHz mono int16.
+// Speaker is a persistent portaudio output stream at OutputSampleRate mono int16.
 // It stays open between utterances to avoid open/close latency.
 type Speaker struct {
 	stream     *portaudio.Stream
@@ -22,11 +28,13 @@ type Speaker struct {
 	sampleRate float64
 	frameSize  int
 
-	mu      sync.Mutex
-	playing bool
-	eos     bool
-	done    chan struct{}
-	aborted bool
+	mu       sync.Mutex
+	playing  bool
+	eos      bool
+	done     chan struct{}
+	aborted  bool
+	gateOpen atomic.Bool
+	residual []int16 // leftover samples from last Feed() that didn't fill a frame
 }
 
 // SpeakerConfig holds configuration for the speaker output.
@@ -39,8 +47,8 @@ type SpeakerConfig struct {
 // DefaultSpeakerConfig returns a SpeakerConfig with standard defaults.
 func DefaultSpeakerConfig() SpeakerConfig {
 	return SpeakerConfig{
-		FrameSize:  FrameSize,
-		SampleRate: SampleRate,
+		FrameSize:  OutputFrameSize,
+		SampleRate: OutputSampleRate,
 	}
 }
 
@@ -77,8 +85,17 @@ func (s *Speaker) Open() error {
 }
 
 // callback is the portaudio output callback. It pulls chunks from the queue
-// and pads with silence when empty.
+// and pads with silence when empty. Pre-buffer gate prevents playback until
+// enough data has accumulated to absorb network jitter.
 func (s *Speaker) callback(out []int16) {
+	// Pre-buffer gate: output silence until enough data is buffered.
+	if !s.gateOpen.Load() {
+		for i := range out {
+			out[i] = 0
+		}
+		return
+	}
+
 	select {
 	case chunk := <-s.queue:
 		// Hold through the copy — no lock release between data read and output
@@ -104,13 +121,18 @@ func (s *Speaker) callback(out []int16) {
 }
 
 // BeginUtterance resets state for a new utterance.
+// The pre-buffer gate is closed; playback won't start until Feed()
+// accumulates enough data or EndUtterance() forces it open.
 func (s *Speaker) BeginUtterance() {
+	s.gateOpen.Store(false)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.playing = true
 	s.eos = false
 	s.aborted = false
+	s.residual = nil
 	// Drain any leftover chunks
 	for len(s.queue) > 0 {
 		<-s.queue
@@ -121,10 +143,13 @@ func (s *Speaker) BeginUtterance() {
 	default:
 	}
 
-	s.logf("speaker: utterance started")
+	s.logf("speaker: utterance started (pre-buffering)")
 }
 
-// Feed resamples PCM s16le data from srcRate to 48kHz and enqueues chunks.
+// Feed resamples PCM s16le data from srcRate to OutputSampleRate and enqueues chunks.
+// When srcRate matches the output rate, resampling is skipped entirely.
+// Residual samples from the previous call are prepended so frames stay aligned
+// across HTTP chunk boundaries.
 func (s *Speaker) Feed(data []byte, srcRate int) {
 	s.mu.Lock()
 	if s.aborted {
@@ -133,28 +158,48 @@ func (s *Speaker) Feed(data []byte, srcRate int) {
 	}
 	s.mu.Unlock()
 
-	resampled := ResampleS16LE(data, srcRate, int(s.sampleRate))
+	var raw []byte
+	if srcRate == int(s.sampleRate) {
+		raw = data
+	} else {
+		raw = ResampleS16LE(data, srcRate, int(s.sampleRate))
+	}
 
-	numSamples := len(resampled) / 2
+	numSamples := len(raw) / 2
 	samples := make([]int16, numSamples)
 	for i := range numSamples {
-		samples[i] = int16(binary.LittleEndian.Uint16(resampled[i*2 : i*2+2]))
+		samples[i] = int16(binary.LittleEndian.Uint16(raw[i*2 : i*2+2]))
+	}
+
+	// Prepend residual samples from previous Feed() call.
+	if len(s.residual) > 0 {
+		samples = append(s.residual, samples...)
+		s.residual = nil
 	}
 
 	// Break into frame-sized chunks and enqueue
 	for offset := 0; offset < len(samples); offset += s.frameSize {
-		end := offset + s.frameSize
-		if end > len(samples) {
-			end = len(samples)
+		remaining := len(samples) - offset
+		if remaining < s.frameSize {
+			// Save incomplete frame for next Feed() call.
+			s.residual = make([]int16, remaining)
+			copy(s.residual, samples[offset:])
+			break
 		}
 		chunk := make([]int16, s.frameSize)
-		copy(chunk, samples[offset:end])
+		copy(chunk, samples[offset:offset+s.frameSize])
 
 		select {
 		case s.queue <- chunk:
-		default:
-			// Drop chunk if queue is full rather than block
+		case <-time.After(500 * time.Millisecond):
+			s.logf("speaker: queue full, dropped frame")
 		}
+	}
+
+	// Open the pre-buffer gate once enough frames are queued.
+	if !s.gateOpen.Load() && len(s.queue) >= preBufferFrames {
+		s.gateOpen.Store(true)
+		s.logf("speaker: pre-buffer gate opened (%d frames)", len(s.queue))
 	}
 }
 
@@ -178,20 +223,31 @@ func (s *Speaker) FeedFloat32(samples []float32) {
 }
 
 // EndUtterance signals that no more data will be fed for this utterance.
+// Flushes any residual samples as a zero-padded final frame, then forces
+// the pre-buffer gate open so short utterances still play.
 func (s *Speaker) EndUtterance() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.eos = true
-	s.logf("speaker: utterance end signaled")
-
-	// If queue is already empty, signal done immediately
-	if len(s.queue) == 0 {
-		s.playing = false
+	// Flush residual samples as a zero-padded final frame.
+	if len(s.residual) > 0 {
+		chunk := make([]int16, s.frameSize)
+		copy(chunk, s.residual)
+		s.residual = nil
 		select {
-		case s.done <- struct{}{}:
+		case s.queue <- chunk:
 		default:
 		}
 	}
+
+	// Force gate open — short utterances may not fill the pre-buffer.
+	s.gateOpen.Store(true)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.eos = true
+	s.logf("speaker: utterance end signaled (queued=%d)", len(s.queue))
+
+	// Done signal comes from the portaudio callback when it sees eos +
+	// empty queue. Never signal done here — the callback is the only
+	// consumer and knows when the last frame has actually been played.
 }
 
 // WaitUtterance blocks until the current utterance finishes playback or timeout.

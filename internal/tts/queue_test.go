@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -105,20 +104,20 @@ func TestQueueBasic(t *testing.T) {
 	}
 }
 
-func TestQueueLatestWins(t *testing.T) {
-	var requestCount atomic.Int32
+func TestQueueFIFO(t *testing.T) {
+	var order []string
+	var orderMu sync.Mutex
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestCount.Add(1)
 		var req ttsRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Errorf("decode: %v", err)
 		}
-		// Slow response to simulate in-flight TTS
-		time.Sleep(100 * time.Millisecond)
+		orderMu.Lock()
+		order = append(order, req.Input)
+		orderMu.Unlock()
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write(make([]byte, 100)); err != nil {
-			// Client may have disconnected due to cancellation
 			return
 		}
 	}))
@@ -135,21 +134,30 @@ func TestQueueLatestWins(t *testing.T) {
 	})
 	q.Start()
 
-	// Enqueue first job
+	// Enqueue two jobs — both must be processed in order
 	q.Enqueue(Job{Text: "first", Backend: BackendSpeaches})
-	time.Sleep(10 * time.Millisecond)
-
-	// Enqueue second job (should drain first)
 	q.Enqueue(Job{Text: "second", Backend: BackendSpeaches})
 
 	time.Sleep(400 * time.Millisecond)
 	q.Stop()
 
-	// The speaker should have been stopped at least once (abort of first job)
+	orderMu.Lock()
+	defer orderMu.Unlock()
+
+	if len(order) != 2 {
+		t.Fatalf("expected 2 jobs processed, got %d", len(order))
+	}
+	if order[0] != "first" || order[1] != "second" {
+		t.Errorf("jobs processed out of order: %v", order)
+	}
+
 	spk.mu.Lock()
 	defer spk.mu.Unlock()
-	if spk.stopped < 1 {
-		t.Errorf("StopUtterance called %d times, want >= 1", spk.stopped)
+	if spk.began != 2 {
+		t.Errorf("BeginUtterance called %d times, want 2", spk.began)
+	}
+	if spk.ended != 2 {
+		t.Errorf("EndUtterance called %d times, want 2", spk.ended)
 	}
 }
 

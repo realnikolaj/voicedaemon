@@ -162,6 +162,9 @@ func (c *Client) Stream(ctx context.Context, text string, backend Backend, opts 
 		defer close(chunks)
 
 		buf := make([]byte, 4096)
+		var carry byte
+		hasCarry := false
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -171,13 +174,32 @@ func (c *Client) Stream(ctx context.Context, text string, backend Backend, opts 
 
 			n, err := resp.Body.Read(buf)
 			if n > 0 {
-				chunk := make([]byte, n)
-				copy(chunk, buf[:n])
+				var chunk []byte
+				if hasCarry {
+					chunk = make([]byte, n+1)
+					chunk[0] = carry
+					copy(chunk[1:], buf[:n])
+					hasCarry = false
+				} else {
+					chunk = make([]byte, n)
+					copy(chunk, buf[:n])
+				}
 
-				select {
-				case chunks <- chunk:
-				case <-ctx.Done():
-					return
+				// PCM s16le: each sample is 2 bytes. If chunk has odd length,
+				// save the trailing byte for the next read to avoid splitting
+				// a sample across chunk boundaries.
+				if len(chunk)%2 != 0 {
+					carry = chunk[len(chunk)-1]
+					hasCarry = true
+					chunk = chunk[:len(chunk)-1]
+				}
+
+				if len(chunk) > 0 {
+					select {
+					case chunks <- chunk:
+					case <-ctx.Done():
+						return
+					}
 				}
 			}
 

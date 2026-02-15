@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/realnikolaj/voicedaemon/internal/audio"
 )
 
 // Job represents a TTS job to be processed.
@@ -28,8 +30,8 @@ type RenderFeeder interface {
 	FeedRender(samples []float32) error
 }
 
-// Queue manages TTS jobs with latest-wins semantics.
-// New jobs drain the queue and cancel current playback.
+// Queue manages TTS jobs with strict FIFO serialization.
+// Jobs are processed one at a time; use StopPlayback for explicit cancellation.
 type Queue struct {
 	client       *Client
 	speaker      Speaker
@@ -88,27 +90,10 @@ func (q *Queue) Start() {
 	q.logf("tts-queue: started")
 }
 
-// Enqueue adds a job to the queue. Implements latest-wins:
-// drains pending jobs and aborts current playback.
+// Enqueue appends a job to the FIFO queue.
+// The worker processes jobs strictly one at a time.
 func (q *Queue) Enqueue(job Job) {
 	q.mu.Lock()
-
-	// Drain pending jobs (latest-wins)
-	drained := 0
-	for len(q.jobs) > 0 {
-		<-q.jobs
-		drained++
-	}
-	if drained > 0 {
-		q.logf("tts-queue: drained %d pending jobs", drained)
-	}
-
-	// Abort current playback if active
-	if q.curAbort != nil {
-		q.curAbort()
-		q.speaker.StopUtterance()
-	}
-
 	q.depth++
 	q.mu.Unlock()
 
@@ -183,15 +168,20 @@ func (q *Queue) processJob(job Job) {
 	q.curAbort = jobCancel
 	q.mu.Unlock()
 
+	label := job.Text
+	if len(label) > 30 {
+		label = label[:30]
+	}
+	q.logf("tts-queue: processing job: %q via %s", label, job.Backend)
+
 	defer func() {
 		jobCancel()
 		q.mu.Lock()
 		q.curAbort = nil
 		q.depth--
 		q.mu.Unlock()
+		q.logf("tts-queue: job complete: %q", label)
 	}()
-
-	q.logf("tts-queue: processing %q via %s", job.Text, job.Backend)
 
 	chunks, sampleRate, err := q.client.Stream(jobCtx, job.Text, job.Backend, job.Opts)
 	if err != nil {
@@ -227,7 +217,8 @@ func (q *Queue) processJob(job Job) {
 	}
 }
 
-// feedRender converts PCM s16le bytes to float32 and feeds through the AEC render path.
+// feedRender converts PCM s16le bytes to float32, resamples to 48kHz,
+// and feeds through the AEC render path.
 func (q *Queue) feedRender(data []byte, sampleRate int) error {
 	numSamples := len(data) / 2
 	if numSamples == 0 {
@@ -240,6 +231,11 @@ func (q *Queue) feedRender(data []byte, sampleRate int) error {
 		hi := data[i*2+1]
 		s := int16(uint16(lo) | uint16(hi)<<8)
 		samples[i] = float32(s) / 32768.0
+	}
+
+	// APM render path expects 48kHz; resample if TTS source rate differs.
+	if sampleRate != audio.SampleRate {
+		samples = audio.Resample(samples, sampleRate, audio.SampleRate)
 	}
 
 	if err := q.renderFeeder.FeedRender(samples); err != nil {
