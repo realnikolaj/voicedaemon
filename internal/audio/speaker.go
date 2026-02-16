@@ -121,9 +121,14 @@ func (s *Speaker) callback(out []int16) {
 }
 
 // BeginUtterance resets state for a new utterance.
-// The pre-buffer gate is closed; playback won't start until Feed()
+// The stream is reopened to re-acquire the current default output device,
+// then the pre-buffer gate is closed; playback won't start until Feed()
 // accumulates enough data or EndUtterance() forces it open.
 func (s *Speaker) BeginUtterance() {
+	if err := s.reopenStream(); err != nil {
+		s.logf("speaker: reopen failed, continuing with existing stream: %v", err)
+	}
+
 	s.gateOpen.Store(false)
 
 	s.mu.Lock()
@@ -281,6 +286,34 @@ func (s *Speaker) StopUtterance() {
 	}
 
 	s.logf("speaker: utterance aborted")
+}
+
+// reopenStream stops and closes the current portaudio stream, then opens and
+// starts a fresh default output stream. This re-acquires the current default
+// output device so that device changes between utterances are picked up.
+func (s *Speaker) reopenStream() error {
+	if s.stream != nil {
+		if err := s.stream.Stop(); err != nil {
+			s.logf("speaker: reopen stop: %v", err)
+		}
+		if err := s.stream.Close(); err != nil {
+			s.logf("speaker: reopen close: %v", err)
+		}
+		s.stream = nil
+	}
+
+	stream, err := portaudio.OpenDefaultStream(0, 1, s.sampleRate, s.frameSize, s.callback)
+	if err != nil {
+		return fmt.Errorf("speaker: reopen open stream: %w", err)
+	}
+	s.stream = stream
+
+	if err := s.stream.Start(); err != nil {
+		return fmt.Errorf("speaker: reopen start stream: %w", err)
+	}
+
+	s.logf("speaker: stream reopened (rate=%.0f, frame=%d)", s.sampleRate, s.frameSize)
+	return nil
 }
 
 // Close shuts down the portaudio output stream.
