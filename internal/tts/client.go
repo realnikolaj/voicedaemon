@@ -224,3 +224,27 @@ func (c *Client) SpeachesURL() string {
 func (c *Client) PocketTTSURL() string {
 	return c.cfg.PocketTTSURL
 }
+
+// ResolveVoiceModel returns the resolved model and voice for a given backend
+// and optional per-request overrides. This mirrors the resolution logic in Stream().
+func (c *Client) ResolveVoiceModel(backend Backend, opts *StreamOpts) (model, voice string) {
+	switch backend {
+	case BackendSpeaches:
+		model = c.cfg.SpeachesModel
+		voice = c.cfg.SpeachesVoice
+	case BackendPocket:
+		model = "piper"
+		voice = c.cfg.PocketVoice
+	}
+
+	if opts != nil {
+		if opts.Model != "" {
+			model = opts.Model
+		}
+		if opts.Voice != "" {
+			voice = opts.Voice
+		}
+	}
+
+	return model, voice
+}
