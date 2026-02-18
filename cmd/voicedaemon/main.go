@@ -27,6 +27,7 @@ type CLI struct {
 	SpeachesModel string           `help:"Speaches TTS model." default:"speaches-ai/Kokoro-82M-v1.0-ONNX" env:"SPEACHES_MODEL"`
 	SpeachesVoice string           `help:"Speaches TTS voice." default:"af_heart" env:"SPEACHES_VOICE"`
 	PocketVoice   string           `help:"PocketTTS voice." default:"alba" env:"POCKET_TTS_VOICE"`
+	TTSLog        string           `name:"tts-log" help:"Path to TTS JSONL log file (empty=disabled)." default:"" env:"VOICEDAEMON_TTS_LOG"`
 	Debug         bool             `help:"Enable debug logging." default:"false" env:"VOICEDAEMON_DEBUG"`
 }
 
@@ -51,6 +52,7 @@ func main() {
 		SpeachesModel: cli.SpeachesModel,
 		SpeachesVoice: cli.SpeachesVoice,
 		PocketVoice:   cli.PocketVoice,
+		TTSLogPath:    cli.TTSLog,
 		Debug:         cli.Debug,
 		Logf:          logf,
 	}

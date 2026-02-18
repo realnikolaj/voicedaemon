@@ -24,6 +24,7 @@ type Config struct {
 	SpeachesModel string
 	SpeachesVoice string
 	PocketVoice   string
+	TTSLogPath    string
 	Debug         bool
 	Logf          func(string, ...any)
 }
@@ -46,15 +47,16 @@ func DefaultConfig() Config {
 
 // Daemon owns all subsystems and orchestrates the voice daemon lifecycle.
 type Daemon struct {
-	cfg       Config
-	logf      func(string, ...any)
-	speaker   *audio.Speaker
-	pipeline  *audio.Pipeline
-	sttClient *stt.Client
-	ttsClient *tts.Client
-	ttsQueue  *tts.Queue
-	socketSrv *SocketServer
-	httpSrv   *HTTPServer
+	cfg          Config
+	logf         func(string, ...any)
+	speaker      *audio.Speaker
+	pipeline     *audio.Pipeline
+	sttClient    *stt.Client
+	ttsClient    *tts.Client
+	ttsQueue     *tts.Queue
+	ttsLogWriter *tts.TTSLogWriter
+	socketSrv    *SocketServer
+	httpSrv      *HTTPServer
 
 	mu          sync.Mutex
 	transcripts []string
@@ -100,11 +102,22 @@ func New(cfg Config) (*Daemon, error) {
 	}
 	ttsClient := tts.NewClient(ttsCfg)
 
+	// TTS log writer (optional)
+	var ttsLogWriter *tts.TTSLogWriter
+	if cfg.TTSLogPath != "" {
+		ttsLogWriter, err = tts.NewTTSLogWriter(cfg.TTSLogPath)
+		if err != nil {
+			return nil, fmt.Errorf("daemon: create tts log writer: %w", err)
+		}
+		logf("daemon: tts log enabled: %s", cfg.TTSLogPath)
+	}
+
 	// TTS queue
 	queueCfg := tts.QueueConfig{
 		Client:       ttsClient,
 		Speaker:      speaker,
 		RenderFeeder: pipeline,
+		LogWriter:    ttsLogWriter,
 		Logf:         logf,
 	}
 	ttsQueue := tts.NewQueue(queueCfg)
@@ -128,15 +141,16 @@ func New(cfg Config) (*Daemon, error) {
 	httpSrv := NewHTTPServer(httpCfg, ttsQueue)
 
 	d := &Daemon{
-		cfg:       cfg,
-		logf:      logf,
-		speaker:   speaker,
-		pipeline:  pipeline,
-		sttClient: sttClient,
-		ttsClient: ttsClient,
-		ttsQueue:  ttsQueue,
-		socketSrv: socketSrv,
-		httpSrv:   httpSrv,
+		cfg:          cfg,
+		logf:         logf,
+		speaker:      speaker,
+		pipeline:     pipeline,
+		sttClient:    sttClient,
+		ttsClient:    ttsClient,
+		ttsQueue:     ttsQueue,
+		ttsLogWriter: ttsLogWriter,
+		socketSrv:    socketSrv,
+		httpSrv:      httpSrv,
 	}
 
 	// Wire socket callbacks
@@ -201,6 +215,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 
 	d.ttsQueue.Stop()
+
+	// Close TTS log writer after queue has drained
+	if d.ttsLogWriter != nil {
+		if err := d.ttsLogWriter.Close(); err != nil {
+			d.logf("daemon: tts log close error: %v", err)
+		}
+	}
 
 	if err := d.pipeline.Stop(); err != nil {
 		d.logf("daemon: pipeline stop error: %v", err)

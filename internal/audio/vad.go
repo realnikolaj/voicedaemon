@@ -31,11 +31,11 @@ func (s VadState) String() string {
 }
 
 const (
-	// DefaultPreBufferFrames is ~800ms of pre-buffer at 32ms/frame (25 frames).
-	DefaultPreBufferFrames = 25
+	// DefaultPreBufferFrames is ~320ms of pre-buffer (32 frames × 10ms at 48kHz).
+	DefaultPreBufferFrames = 32
 
-	// DefaultSilenceGapFrames is ~640ms silence gap (20 consecutive non-voice frames).
-	DefaultSilenceGapFrames = 20
+	// DefaultSilenceGapFrames is ~800ms silence gap (80 consecutive non-voice frames × 10ms).
+	DefaultSilenceGapFrames = 80
 )
 
 // VADConfig holds configuration for the VAD state machine.

@@ -36,6 +36,7 @@ type Queue struct {
 	client       *Client
 	speaker      Speaker
 	renderFeeder RenderFeeder
+	logWriter    *TTSLogWriter
 	logf         func(string, ...any)
 
 	mu       sync.Mutex
@@ -53,6 +54,7 @@ type QueueConfig struct {
 	Client       *Client
 	Speaker      Speaker
 	RenderFeeder RenderFeeder
+	LogWriter    *TTSLogWriter
 	Logf         func(string, ...any)
 }
 
@@ -67,6 +69,7 @@ func NewQueue(cfg QueueConfig) *Queue {
 		client:       cfg.Client,
 		speaker:      cfg.Speaker,
 		renderFeeder: cfg.RenderFeeder,
+		logWriter:    cfg.LogWriter,
 		logf:         logf,
 		jobs:         make(chan Job, 16),
 	}
@@ -163,6 +166,7 @@ func (q *Queue) worker() {
 
 func (q *Queue) processJob(job Job) {
 	jobCtx, jobCancel := context.WithCancel(q.ctx)
+	started := time.Now()
 
 	q.mu.Lock()
 	q.curAbort = jobCancel
@@ -214,6 +218,21 @@ func (q *Queue) processJob(job Job) {
 	q.speaker.EndUtterance()
 	if err := q.speaker.WaitUtterance(30 * time.Second); err != nil {
 		q.logf("tts-queue: wait utterance: %v", err)
+	}
+
+	// Write TTS log entry after confirmed playback
+	if q.logWriter != nil {
+		model, voice := q.client.ResolveVoiceModel(job.Backend, job.Opts)
+		entry := TTSLogEntry{
+			Text:       job.Text,
+			Voice:      voice,
+			Backend:    string(job.Backend),
+			Model:      model,
+			DurationMs: time.Since(started).Milliseconds(),
+		}
+		if err := q.logWriter.Write(entry); err != nil {
+			q.logf("tts-queue: log write error: %v", err)
+		}
 	}
 }
 
