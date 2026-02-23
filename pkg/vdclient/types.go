@@ -6,6 +6,7 @@ type SpeakRequest struct {
 	Backend string `json:"backend,omitempty"`
 	Model   string `json:"model,omitempty"`
 	Voice   string `json:"voice,omitempty"`
+	NoLog   bool   `json:"nolog,omitempty"`
 }
 
 // SpeakResponse is the response from POST /speak.

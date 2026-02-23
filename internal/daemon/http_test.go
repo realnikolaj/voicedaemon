@@ -93,6 +93,7 @@ func TestHTTPSpeak(t *testing.T) {
 		body       string
 		wantStatus int
 		wantQueued bool
+		wantNoLog  bool
 	}{
 		{
 			name:       "basic speak",
@@ -121,6 +122,13 @@ func TestHTTPSpeak(t *testing.T) {
 			name:       "invalid json",
 			body:       `not json`,
 			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "speak with nolog",
+			body:       `{"text": "secret", "nolog": true}`,
+			wantStatus: http.StatusOK,
+			wantQueued: true,
+			wantNoLog:  true,
 		},
 	}
 
@@ -156,6 +164,10 @@ func TestHTTPSpeak(t *testing.T) {
 				defer q.mu.Unlock()
 				if len(q.jobs) == 0 {
 					t.Error("no jobs enqueued")
+				}
+
+				if tt.wantNoLog && len(q.jobs) > 0 && !q.jobs[0].NoLog {
+					t.Error("job.NoLog = false, want true")
 				}
 			}
 		})

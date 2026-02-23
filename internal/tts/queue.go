@@ -14,6 +14,7 @@ type Job struct {
 	Text    string
 	Backend Backend
 	Opts    *StreamOpts
+	NoLog   bool
 }
 
 // Speaker is the interface the queue uses to control playback.
@@ -229,6 +230,7 @@ func (q *Queue) processJob(job Job) {
 			Backend:    string(job.Backend),
 			Model:      model,
 			DurationMs: time.Since(started).Milliseconds(),
+			NoLog:      job.NoLog,
 		}
 		if err := q.logWriter.Write(entry); err != nil {
 			q.logf("tts-queue: log write error: %v", err)

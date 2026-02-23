@@ -118,6 +118,7 @@ All flags have env var equivalents:
 | `--speaches-model` | `SPEACHES_MODEL` | `speaches-ai/Kokoro-82M-v1.0-ONNX` |
 | `--speaches-voice` | `SPEACHES_VOICE` | `af_heart` |
 | `--pocket-voice` | `POCKET_TTS_VOICE` | `alba` |
+| `--tts-log` | `VOICEDAEMON_TTS_LOG` | `""` (disabled) |
 | `--debug` | `VOICEDAEMON_DEBUG` | `false` |
 
 ## Integration

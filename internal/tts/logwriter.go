@@ -17,6 +17,7 @@ type TTSLogEntry struct {
 	Backend    string `json:"backend"`
 	Model      string `json:"model,omitempty"`
 	DurationMs int64  `json:"duration_ms,omitempty"`
+	NoLog      bool   `json:"-"`
 }
 
 // TTSLogWriter appends JSON-lines entries to a file after each TTS utterance completes.
@@ -43,6 +44,18 @@ func NewTTSLogWriter(path string) (*TTSLogWriter, error) {
 
 // Write marshals the entry to JSON and appends it as a single line.
 func (w *TTSLogWriter) Write(entry TTSLogEntry) error {
+	if entry.NoLog {
+		return nil
+	}
+
+	if entry.Voice != "eponine" && entry.Voice != "glados" {
+		return nil
+	}
+
+	if entry.Backend == "pocket" {
+		entry.Backend = "pockettts"
+	}
+
 	if entry.Timestamp == "" {
 		entry.Timestamp = time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 	}
