@@ -1,15 +1,37 @@
 package daemon
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/realnikolaj/voicedaemon/internal/tts"
 )
+
+// mockPipeline implements AudioPipeline for testing.
+type mockPipeline struct {
+	mu        sync.Mutex
+	threshold float64
+	muted     bool
+	gain      float64
+}
+
+func newMockPipeline() *mockPipeline {
+	return &mockPipeline{threshold: 0.015, gain: 1.0}
+}
+
+func (m *mockPipeline) SetVADThreshold(t float64) { m.mu.Lock(); m.threshold = t; m.mu.Unlock() }
+func (m *mockPipeline) VADThreshold() float64     { m.mu.Lock(); defer m.mu.Unlock(); return m.threshold }
+func (m *mockPipeline) SetMuted(v bool)           { m.mu.Lock(); m.muted = v; m.mu.Unlock() }
+func (m *mockPipeline) Muted() bool               { m.mu.Lock(); defer m.mu.Unlock(); return m.muted }
+func (m *mockPipeline) SetGain(g float64)         { m.mu.Lock(); m.gain = g; m.mu.Unlock() }
+func (m *mockPipeline) Gain() float64             { m.mu.Lock(); defer m.mu.Unlock(); return m.gain }
 
 // mockQueue implements TTSQueue for testing.
 type mockQueue struct {
@@ -39,11 +61,12 @@ func (m *mockQueue) StopPlayback() {
 	m.depth = 0
 }
 
-func startTestHTTPServer(t *testing.T, q TTSQueue) *HTTPServer {
+func startTestHTTPServer(t *testing.T, q TTSQueue) (*HTTPServer, *mockPipeline) {
 	t.Helper()
 	cfg := DefaultHTTPConfig()
 	cfg.Port = 0 // random port
-	srv := NewHTTPServer(cfg, q)
+	p := newMockPipeline()
+	srv := NewHTTPServer(cfg, q, p)
 
 	if err := srv.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -53,12 +76,12 @@ func startTestHTTPServer(t *testing.T, q TTSQueue) *HTTPServer {
 			t.Errorf("close: %v", err)
 		}
 	})
-	return srv
+	return srv, p
 }
 
 func TestHTTPHealth(t *testing.T) {
 	q := &mockQueue{}
-	srv := startTestHTTPServer(t, q)
+	srv, _ := startTestHTTPServer(t, q)
 
 	resp, err := http.Get("http://" + srv.Addr() + "/health")
 	if err != nil {
@@ -135,7 +158,7 @@ func TestHTTPSpeak(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			q := &mockQueue{}
-			srv := startTestHTTPServer(t, q)
+			srv, _ := startTestHTTPServer(t, q)
 
 			resp, err := http.Post(
 				"http://"+srv.Addr()+"/speak",
@@ -189,7 +212,7 @@ func TestHTTPSpeakBackendSelection(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			q := &mockQueue{}
-			srv := startTestHTTPServer(t, q)
+			srv, _ := startTestHTTPServer(t, q)
 
 			body := map[string]string{"text": "hello"}
 			if tt.backend != "" {
@@ -221,7 +244,7 @@ func TestHTTPSpeakBackendSelection(t *testing.T) {
 
 func TestHTTPStop(t *testing.T) {
 	q := &mockQueue{}
-	srv := startTestHTTPServer(t, q)
+	srv, _ := startTestHTTPServer(t, q)
 
 	resp, err := http.Post("http://"+srv.Addr()+"/stop", "", nil)
 	if err != nil {
@@ -250,7 +273,7 @@ func TestHTTPStop(t *testing.T) {
 
 func TestHTTPMethodRouting(t *testing.T) {
 	q := &mockQueue{}
-	srv := startTestHTTPServer(t, q)
+	srv, _ := startTestHTTPServer(t, q)
 	base := "http://" + srv.Addr()
 
 	// GET /speak should 405
@@ -271,5 +294,239 @@ func TestHTTPMethodRouting(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("POST /health = %d, want 405", resp.StatusCode)
+	}
+}
+
+func TestHTTPSetVADThreshold(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantThresh float64
+	}{
+		{"valid threshold", `{"threshold": 0.03}`, http.StatusOK, 0.03},
+		{"zero threshold", `{"threshold": 0}`, http.StatusBadRequest, 0.015},
+		{"negative threshold", `{"threshold": -0.5}`, http.StatusBadRequest, 0.015},
+		{"invalid json", `not json`, http.StatusBadRequest, 0.015},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := &mockQueue{}
+			srv, p := startTestHTTPServer(t, q)
+
+			resp, err := http.Post(
+				"http://"+srv.Addr()+"/vad/threshold",
+				"application/json",
+				bytes.NewBufferString(tt.body),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != tt.wantStatus {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+
+			p.mu.Lock()
+			got := p.threshold
+			p.mu.Unlock()
+			if got != tt.wantThresh {
+				t.Errorf("threshold = %f, want %f", got, tt.wantThresh)
+			}
+		})
+	}
+}
+
+func TestHTTPSetMicMute(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantMuted  bool
+	}{
+		{"mute", `{"muted": true}`, http.StatusOK, true},
+		{"unmute", `{"muted": false}`, http.StatusOK, false},
+		{"invalid json", `not json`, http.StatusBadRequest, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := &mockQueue{}
+			srv, p := startTestHTTPServer(t, q)
+
+			resp, err := http.Post(
+				"http://"+srv.Addr()+"/mic/mute",
+				"application/json",
+				bytes.NewBufferString(tt.body),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != tt.wantStatus {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+
+			p.mu.Lock()
+			got := p.muted
+			p.mu.Unlock()
+			if got != tt.wantMuted {
+				t.Errorf("muted = %v, want %v", got, tt.wantMuted)
+			}
+		})
+	}
+}
+
+func TestHTTPSetGain(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantGain   float64
+	}{
+		{"valid gain", `{"gain": 1.5}`, http.StatusOK, 1.5},
+		{"unity gain", `{"gain": 1.0}`, http.StatusOK, 1.0},
+		{"zero gain", `{"gain": 0}`, http.StatusBadRequest, 1.0},
+		{"negative gain", `{"gain": -1}`, http.StatusBadRequest, 1.0},
+		{"invalid json", `not json`, http.StatusBadRequest, 1.0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := &mockQueue{}
+			srv, p := startTestHTTPServer(t, q)
+
+			resp, err := http.Post(
+				"http://"+srv.Addr()+"/gain",
+				"application/json",
+				bytes.NewBufferString(tt.body),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != tt.wantStatus {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+
+			p.mu.Lock()
+			got := p.gain
+			p.mu.Unlock()
+			if got != tt.wantGain {
+				t.Errorf("gain = %f, want %f", got, tt.wantGain)
+			}
+		})
+	}
+}
+
+func TestHTTPConfig(t *testing.T) {
+	q := &mockQueue{}
+	srv, p := startTestHTTPServer(t, q)
+
+	// Set some non-default values
+	p.mu.Lock()
+	p.threshold = 0.05
+	p.muted = true
+	p.gain = 2.0
+	p.mu.Unlock()
+
+	resp, err := http.Get("http://" + srv.Addr() + "/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+
+	checks := map[string]any{
+		"vad_threshold":  0.05,
+		"muted":          true,
+		"gain":           2.0,
+		"speaches_url":   "http://localhost:34331",
+		"pocket_tts_url": "http://localhost:49112",
+		"stt_url":        "http://localhost:34331",
+		"port":           float64(0), // test uses port 0 for random assignment
+	}
+	for k, want := range checks {
+		if body[k] != want {
+			t.Errorf("%s = %v, want %v", k, body[k], want)
+		}
+	}
+}
+
+func TestHTTPTranscriptStream(t *testing.T) {
+	q := &mockQueue{}
+	srv, _ := startTestHTTPServer(t, q)
+	base := "http://" + srv.Addr()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/transcripts/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("content-type = %q, want text/event-stream", ct)
+	}
+
+	// Read events in a goroutine
+	events := make(chan string, 4)
+	go func() {
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "data: ") {
+				events <- strings.TrimPrefix(line, "data: ")
+			}
+		}
+	}()
+
+	// Give the SSE goroutine time to start reading
+	time.Sleep(50 * time.Millisecond)
+
+	// Broadcast two transcripts
+	srv.BroadcastTranscript("hello world")
+	srv.BroadcastTranscript("second utterance")
+
+	// Read them back
+	select {
+	case got := <-events:
+		if got != "hello world" {
+			t.Errorf("event 1 = %q, want %q", got, "hello world")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for event 1")
+	}
+
+	select {
+	case got := <-events:
+		if got != "second utterance" {
+			t.Errorf("event 2 = %q, want %q", got, "second utterance")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for event 2")
 	}
 }

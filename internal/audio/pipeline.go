@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 )
 
 // PipelineConfig holds configuration for the audio pipeline.
@@ -37,6 +38,10 @@ type Pipeline struct {
 
 	mu      sync.Mutex
 	running bool
+
+	muted  atomic.Bool
+	gainMu sync.Mutex
+	gain   float64
 }
 
 // NewPipeline creates a new audio pipeline.
@@ -61,6 +66,7 @@ func NewPipeline(cfg PipelineConfig, speaker *Speaker) (*Pipeline, error) {
 		logf:    logf,
 		proc:    proc,
 		speaker: speaker,
+		gain:    1.0,
 	}, nil
 }
 
@@ -108,6 +114,19 @@ func (p *Pipeline) captureLoop(ctx context.Context) {
 		case frame, ok := <-p.mic.Frames():
 			if !ok {
 				return
+			}
+
+			if p.muted.Load() {
+				continue
+			}
+
+			p.gainMu.Lock()
+			g := p.gain
+			p.gainMu.Unlock()
+			if g != 1.0 {
+				for i := range frame {
+					frame[i] *= float32(g)
+				}
 			}
 
 			clean, hasVoice, err := p.proc.ProcessCapture(frame)
@@ -164,6 +183,42 @@ func (p *Pipeline) StopListening() {
 	if p.vad != nil {
 		p.vad.Stop()
 	}
+}
+
+// SetMuted enables or disables mic muting. When muted, captured frames are discarded.
+func (p *Pipeline) SetMuted(muted bool) {
+	p.muted.Store(muted)
+	p.logf("pipeline: muted = %v", muted)
+}
+
+// Muted returns whether the mic is currently muted.
+func (p *Pipeline) Muted() bool {
+	return p.muted.Load()
+}
+
+// SetGain sets the input gain multiplier applied to captured audio before VAD/STT.
+func (p *Pipeline) SetGain(gain float64) {
+	p.gainMu.Lock()
+	p.gain = gain
+	p.gainMu.Unlock()
+	p.logf("pipeline: gain = %.2f", gain)
+}
+
+// Gain returns the current input gain multiplier.
+func (p *Pipeline) Gain() float64 {
+	p.gainMu.Lock()
+	defer p.gainMu.Unlock()
+	return p.gain
+}
+
+// SetVADThreshold delegates to the audio processor's VAD threshold setter.
+func (p *Pipeline) SetVADThreshold(threshold float64) {
+	p.proc.SetVADThreshold(threshold)
+}
+
+// VADThreshold returns the current VAD threshold from the audio processor.
+func (p *Pipeline) VADThreshold() float64 {
+	return p.proc.VADThreshold()
 }
 
 // Stop shuts down the pipeline in the correct order:

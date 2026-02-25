@@ -138,7 +138,7 @@ func New(cfg Config) (*Daemon, error) {
 		SocketPath:   cfg.SocketPath,
 		Logf:         logf,
 	}
-	httpSrv := NewHTTPServer(httpCfg, ttsQueue)
+	httpSrv := NewHTTPServer(httpCfg, ttsQueue, pipeline)
 
 	d := &Daemon{
 		cfg:          cfg,
@@ -253,6 +253,7 @@ func (d *Daemon) onUtterance(samples []float32) {
 	d.mu.Unlock()
 
 	d.socketSrv.PushTranscript(text)
+	d.httpSrv.BroadcastTranscript(text)
 }
 
 // onSocketStart handles the "start" command from the socket.

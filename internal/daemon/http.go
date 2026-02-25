@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/realnikolaj/voicedaemon/internal/tts"
@@ -39,26 +40,42 @@ type TTSQueue interface {
 	StopPlayback()
 }
 
+// AudioPipeline is the interface the HTTP server uses for runtime audio control.
+type AudioPipeline interface {
+	SetVADThreshold(float64)
+	VADThreshold() float64
+	SetMuted(bool)
+	Muted() bool
+	SetGain(float64)
+	Gain() float64
+}
+
 // HTTPServer serves the TTS HTTP API.
 type HTTPServer struct {
 	cfg      HTTPConfig
 	logf     func(string, ...any)
 	queue    TTSQueue
+	pipeline AudioPipeline
 	server   *http.Server
 	listener net.Listener
+
+	subsMu sync.Mutex
+	subs   map[chan string]struct{}
 }
 
 // NewHTTPServer creates a new HTTP server.
-func NewHTTPServer(cfg HTTPConfig, queue TTSQueue) *HTTPServer {
+func NewHTTPServer(cfg HTTPConfig, queue TTSQueue, pipeline AudioPipeline) *HTTPServer {
 	logf := cfg.Logf
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
 
 	return &HTTPServer{
-		cfg:   cfg,
-		logf:  logf,
-		queue: queue,
+		cfg:      cfg,
+		logf:     logf,
+		queue:    queue,
+		pipeline: pipeline,
+		subs:     make(map[chan string]struct{}),
 	}
 }
 
@@ -77,6 +94,11 @@ func (h *HTTPServer) Start(_ context.Context) error {
 	mux.HandleFunc("POST /speak", h.handleSpeak)
 	mux.HandleFunc("POST /stop", h.handleStop)
 	mux.HandleFunc("GET /health", h.handleHealth)
+	mux.HandleFunc("POST /vad/threshold", h.handleSetVADThreshold)
+	mux.HandleFunc("POST /mic/mute", h.handleSetMicMute)
+	mux.HandleFunc("POST /gain", h.handleSetGain)
+	mux.HandleFunc("GET /config", h.handleConfig)
+	mux.HandleFunc("GET /transcripts/stream", h.handleTranscriptStream)
 
 	addr := fmt.Sprintf(":%d", h.cfg.Port)
 	listener, err := net.Listen("tcp", addr)
@@ -86,9 +108,9 @@ func (h *HTTPServer) Start(_ context.Context) error {
 	h.listener = listener
 
 	h.server = &http.Server{
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		Handler:     mux,
+		ReadTimeout: 10 * time.Second,
+		// No WriteTimeout — SSE connections are long-lived
 	}
 
 	go func() {
@@ -157,6 +179,126 @@ func (h *HTTPServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		"stt_url":        h.cfg.STTURL,
 		"stt_socket":     h.cfg.SocketPath,
 	})
+}
+
+func (h *HTTPServer) handleSetVADThreshold(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Threshold float64 `json:"threshold"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	if req.Threshold <= 0 {
+		h.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "threshold must be positive"})
+		return
+	}
+	h.pipeline.SetVADThreshold(req.Threshold)
+	h.writeJSON(w, http.StatusOK, map[string]any{
+		"status":    "ok",
+		"threshold": req.Threshold,
+	})
+}
+
+func (h *HTTPServer) handleSetMicMute(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Muted bool `json:"muted"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	h.pipeline.SetMuted(req.Muted)
+	h.writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok",
+		"muted":  req.Muted,
+	})
+}
+
+func (h *HTTPServer) handleSetGain(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Gain float64 `json:"gain"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	if req.Gain <= 0 {
+		h.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "gain must be positive"})
+		return
+	}
+	h.pipeline.SetGain(req.Gain)
+	h.writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok",
+		"gain":   req.Gain,
+	})
+}
+
+func (h *HTTPServer) handleConfig(w http.ResponseWriter, _ *http.Request) {
+	h.writeJSON(w, http.StatusOK, map[string]any{
+		"vad_threshold":  h.pipeline.VADThreshold(),
+		"muted":          h.pipeline.Muted(),
+		"gain":           h.pipeline.Gain(),
+		"speaches_url":   h.cfg.SpeachesURL,
+		"pocket_tts_url": h.cfg.PocketTTSURL,
+		"stt_url":        h.cfg.STTURL,
+		"port":           h.cfg.Port,
+	})
+}
+
+func (h *HTTPServer) handleTranscriptStream(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		h.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming not supported"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	ch := make(chan string, 16)
+	h.subsMu.Lock()
+	h.subs[ch] = struct{}{}
+	h.subsMu.Unlock()
+
+	defer func() {
+		h.subsMu.Lock()
+		delete(h.subs, ch)
+		h.subsMu.Unlock()
+	}()
+
+	h.logf("http: SSE subscriber connected")
+
+	for {
+		select {
+		case <-r.Context().Done():
+			h.logf("http: SSE subscriber disconnected")
+			return
+		case text := <-ch:
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", text); err != nil {
+				h.logf("http: SSE write error: %v", err)
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+// BroadcastTranscript sends a transcript to all SSE subscribers.
+func (h *HTTPServer) BroadcastTranscript(text string) {
+	h.subsMu.Lock()
+	defer h.subsMu.Unlock()
+
+	for ch := range h.subs {
+		select {
+		case ch <- text:
+		default:
+			h.logf("http: SSE subscriber slow, dropping transcript")
+		}
+	}
 }
 
 func (h *HTTPServer) writeJSON(w http.ResponseWriter, status int, data any) {

@@ -70,6 +70,18 @@ func (p *Processor) ProcessRender(frame []float32) error {
 	return nil
 }
 
+// SetVADThreshold is a no-op for the real APM build. WebRTC APM uses its own
+// internal VAD which does not expose a threshold parameter.
+func (p *Processor) SetVADThreshold(threshold float64) {
+	p.logf("apm: SetVADThreshold(%.4f) ignored (real APM uses internal VAD)", threshold)
+}
+
+// VADThreshold returns 0 for the real APM build. The WebRTC VAD does not
+// expose its internal threshold.
+func (p *Processor) VADThreshold() float64 {
+	return 0
+}
+
 // Close destroys the APM instance. Safe to call multiple times.
 func (p *Processor) Close() {
 	if p.handle != nil {

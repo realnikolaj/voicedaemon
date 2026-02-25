@@ -3,6 +3,7 @@ package vdclient
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -170,5 +171,227 @@ func TestSpeakHTTPError(t *testing.T) {
 	_, err := client.Speak(context.Background(), SpeakRequest{})
 	if err == nil {
 		t.Fatal("expected error for 400 response")
+	}
+}
+
+func TestSetVADThreshold(t *testing.T) {
+	tests := []struct {
+		name      string
+		threshold float64
+	}{
+		{"low threshold", 0.01},
+		{"high threshold", 0.1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					t.Errorf("method = %s, want POST", r.Method)
+				}
+				if r.URL.Path != "/vad/threshold" {
+					t.Errorf("path = %s, want /vad/threshold", r.URL.Path)
+				}
+
+				var got map[string]float64
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Fatalf("decode: %v", err)
+				}
+				if got["threshold"] != tt.threshold {
+					t.Errorf("threshold = %f, want %f", got["threshold"], tt.threshold)
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(map[string]any{"status": "ok", "threshold": got["threshold"]}); err != nil {
+					t.Fatalf("encode: %v", err)
+				}
+			}))
+			defer srv.Close()
+
+			client := New(srv.URL)
+			if err := client.SetVADThreshold(context.Background(), tt.threshold); err != nil {
+				t.Fatalf("SetVADThreshold() error: %v", err)
+			}
+		})
+	}
+}
+
+func TestSetMicMute(t *testing.T) {
+	tests := []struct {
+		name  string
+		muted bool
+	}{
+		{"mute", true},
+		{"unmute", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					t.Errorf("method = %s, want POST", r.Method)
+				}
+				if r.URL.Path != "/mic/mute" {
+					t.Errorf("path = %s, want /mic/mute", r.URL.Path)
+				}
+
+				var got map[string]bool
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Fatalf("decode: %v", err)
+				}
+				if got["muted"] != tt.muted {
+					t.Errorf("muted = %v, want %v", got["muted"], tt.muted)
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(map[string]any{"status": "ok", "muted": got["muted"]}); err != nil {
+					t.Fatalf("encode: %v", err)
+				}
+			}))
+			defer srv.Close()
+
+			client := New(srv.URL)
+			if err := client.SetMicMute(context.Background(), tt.muted); err != nil {
+				t.Fatalf("SetMicMute() error: %v", err)
+			}
+		})
+	}
+}
+
+func TestSetGain(t *testing.T) {
+	tests := []struct {
+		name string
+		gain float64
+	}{
+		{"unity", 1.0},
+		{"boost", 2.0},
+		{"reduce", 0.5},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					t.Errorf("method = %s, want POST", r.Method)
+				}
+				if r.URL.Path != "/gain" {
+					t.Errorf("path = %s, want /gain", r.URL.Path)
+				}
+
+				var got map[string]float64
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Fatalf("decode: %v", err)
+				}
+				if got["gain"] != tt.gain {
+					t.Errorf("gain = %f, want %f", got["gain"], tt.gain)
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(map[string]any{"status": "ok", "gain": got["gain"]}); err != nil {
+					t.Fatalf("encode: %v", err)
+				}
+			}))
+			defer srv.Close()
+
+			client := New(srv.URL)
+			if err := client.SetGain(context.Background(), tt.gain); err != nil {
+				t.Fatalf("SetGain() error: %v", err)
+			}
+		})
+	}
+}
+
+func TestConfig(t *testing.T) {
+	want := ConfigResponse{
+		VADThreshold: 0.015,
+		Muted:        false,
+		Gain:         1.0,
+		SpeachesURL:  "http://localhost:34331",
+		PocketTTSURL: "http://localhost:49112",
+		STTURL:       "http://localhost:34331",
+		Port:         5111,
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %s, want GET", r.Method)
+		}
+		if r.URL.Path != "/config" {
+			t.Errorf("path = %s, want /config", r.URL.Path)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(want); err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	client := New(srv.URL)
+	got, err := client.Config(context.Background())
+	if err != nil {
+		t.Fatalf("Config() error: %v", err)
+	}
+	if got.VADThreshold != want.VADThreshold {
+		t.Errorf("vad_threshold = %f, want %f", got.VADThreshold, want.VADThreshold)
+	}
+	if got.Muted != want.Muted {
+		t.Errorf("muted = %v, want %v", got.Muted, want.Muted)
+	}
+	if got.Gain != want.Gain {
+		t.Errorf("gain = %f, want %f", got.Gain, want.Gain)
+	}
+	if got.Port != want.Port {
+		t.Errorf("port = %d, want %d", got.Port, want.Port)
+	}
+}
+
+func TestTranscriptStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %s, want GET", r.Method)
+		}
+		if r.URL.Path != "/transcripts/stream" {
+			t.Errorf("path = %s, want /transcripts/stream", r.URL.Path)
+		}
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("flusher not supported")
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher.Flush()
+
+		// Send two events
+		if _, err := fmt.Fprintf(w, "data: hello world\n\n"); err != nil {
+			return
+		}
+		flusher.Flush()
+		if _, err := fmt.Fprintf(w, "data: second utterance\n\n"); err != nil {
+			return
+		}
+		flusher.Flush()
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	client := New(srv.URL)
+	ch, err := client.TranscriptStream(ctx)
+	if err != nil {
+		t.Fatalf("TranscriptStream() error: %v", err)
+	}
+
+	got1 := <-ch
+	if got1 != "hello world" {
+		t.Errorf("transcript 1 = %q, want %q", got1, "hello world")
+	}
+
+	got2 := <-ch
+	if got2 != "second utterance" {
+		t.Errorf("transcript 2 = %q, want %q", got2, "second utterance")
 	}
 }

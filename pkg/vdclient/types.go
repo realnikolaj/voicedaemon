@@ -31,6 +31,17 @@ type StopResponse struct {
 	Status string `json:"status"`
 }
 
+// ConfigResponse is the response from GET /config.
+type ConfigResponse struct {
+	VADThreshold float64 `json:"vad_threshold"`
+	Muted        bool    `json:"muted"`
+	Gain         float64 `json:"gain"`
+	SpeachesURL  string  `json:"speaches_url"`
+	PocketTTSURL string  `json:"pocket_tts_url"`
+	STTURL       string  `json:"stt_url"`
+	Port         int     `json:"port"`
+}
+
 // ErrorResponse is returned on HTTP errors from the daemon.
 type ErrorResponse struct {
 	Error string `json:"error"`

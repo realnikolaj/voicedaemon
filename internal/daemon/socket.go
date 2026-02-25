@@ -10,23 +10,6 @@ import (
 	"sync"
 )
 
-// AudioPipeline is the interface the socket server uses to control the audio pipeline.
-type AudioPipeline interface {
-	StartListening()
-	StopListening()
-	VADState() VadStateString
-}
-
-// VadStateString is a type that has a String() method for VAD state.
-type VadStateString interface {
-	String() string
-}
-
-// Transcriber transcribes audio and returns text.
-type Transcriber interface {
-	TranscribeCallback() func(audio []float32)
-}
-
 // SocketConfig holds configuration for the Unix socket server.
 type SocketConfig struct {
 	Path string
