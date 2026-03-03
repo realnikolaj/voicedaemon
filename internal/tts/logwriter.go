@@ -16,6 +16,7 @@ type TTSLogEntry struct {
 	Voice      string `json:"voice"`
 	Backend    string `json:"backend"`
 	Model      string `json:"model,omitempty"`
+	Project    string `json:"project,omitempty"`
 	DurationMs int64  `json:"duration_ms,omitempty"`
 	NoLog      bool   `json:"-"`
 }
@@ -45,10 +46,6 @@ func NewTTSLogWriter(path string) (*TTSLogWriter, error) {
 // Write marshals the entry to JSON and appends it as a single line.
 func (w *TTSLogWriter) Write(entry TTSLogEntry) error {
 	if entry.NoLog {
-		return nil
-	}
-
-	if entry.Voice != "eponine" && entry.Voice != "glados" {
 		return nil
 	}
 

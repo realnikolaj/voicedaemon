@@ -15,6 +15,7 @@ type Job struct {
 	Backend Backend
 	Opts    *StreamOpts
 	NoLog   bool
+	Project string
 }
 
 // Speaker is the interface the queue uses to control playback.
@@ -229,6 +230,7 @@ func (q *Queue) processJob(job Job) {
 			Voice:      voice,
 			Backend:    string(job.Backend),
 			Model:      model,
+			Project:    job.Project,
 			DurationMs: time.Since(started).Milliseconds(),
 			NoLog:      job.NoLog,
 		}

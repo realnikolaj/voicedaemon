@@ -12,16 +12,16 @@ import (
 	"github.com/realnikolaj/voicedaemon/internal/daemon"
 )
 
-var version = "0.2.7"
+var version = "0.2.8"
 
 // CLI defines the Kong CLI flags for voicedaemon.
 type CLI struct {
 	Version       kong.VersionFlag `name:"version" help:"Print version."`
 	Port          int              `help:"HTTP server port." default:"5111" env:"DAEMON_PORT"`
 	SocketPath    string           `help:"Unix socket path for STT." default:"/tmp/voice-daemon.sock" env:"STT_SOCKET_PATH"`
-	SpeachesURL   string           `help:"Speaches TTS/STT server URL." default:"http://localhost:34331" env:"SPEACHES_URL"`
+	SpeachesURL   string           `help:"Speaches server URL (also used for STT unless --stt-url is set)." default:"http://localhost:34331" env:"SPEACHES_URL"`
 	PocketTTSURL  string           `name:"pocket-tts-url" help:"PocketTTS server URL." default:"http://localhost:49112" env:"POCKET_TTS_URL"`
-	STTURL        string           `name:"stt-url" help:"STT server URL." default:"http://localhost:34331" env:"STT_URL"`
+	STTURL        string           `name:"stt-url" help:"STT server URL (defaults to --speaches-url if not set)." default:"" env:"STT_URL"`
 	STTModel      string           `help:"STT model name." default:"deepdml/faster-whisper-large-v3-turbo-ct2" env:"STT_MODEL"`
 	STTLanguage   string           `help:"STT language code." default:"en" env:"STT_LANGUAGE"`
 	SpeachesModel string           `help:"Speaches TTS model." default:"speaches-ai/Kokoro-82M-v1.0-ONNX" env:"SPEACHES_MODEL"`
@@ -38,6 +38,12 @@ func main() {
 		kong.Description("Standalone STT+TTS daemon with portaudio capture, VAD, and echo cancellation."),
 		kong.Vars{"version": version},
 	)
+
+	// Fall back to SpeachesURL when STT URL is not explicitly set.
+	// One server, one URL. Override only when STT lives elsewhere.
+	if cli.STTURL == "" {
+		cli.STTURL = cli.SpeachesURL
+	}
 
 	logf := makeLogf(cli.Debug)
 

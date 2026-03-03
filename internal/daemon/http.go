@@ -86,6 +86,7 @@ type speakRequest struct {
 	Model   string `json:"model,omitempty"`
 	Voice   string `json:"voice,omitempty"`
 	NoLog   bool   `json:"nolog,omitempty"`
+	Project string `json:"project,omitempty"`
 }
 
 // Start begins serving HTTP on the configured port.
@@ -153,6 +154,7 @@ func (h *HTTPServer) handleSpeak(w http.ResponseWriter, r *http.Request) {
 		Backend: backend,
 		Opts:    opts,
 		NoLog:   req.NoLog,
+		Project: req.Project,
 	})
 
 	h.writeJSON(w, http.StatusOK, map[string]any{

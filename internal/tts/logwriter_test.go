@@ -33,13 +33,31 @@ func TestLogWriterFiltering(t *testing.T) {
 			wantWritten: true,
 		},
 		{
-			name: "voice alba is filtered out",
+			name: "voice am_puck is written",
+			entry: TTSLogEntry{
+				Text:    "test am_puck",
+				Voice:   "am_puck",
+				Backend: "speaches",
+			},
+			wantWritten: true,
+		},
+		{
+			name: "voice bm_fable is written",
+			entry: TTSLogEntry{
+				Text:    "test bm_fable",
+				Voice:   "bm_fable",
+				Backend: "speaches",
+			},
+			wantWritten: true,
+		},
+		{
+			name: "voice alba is written",
 			entry: TTSLogEntry{
 				Text:    "test alba",
 				Voice:   "alba",
 				Backend: "speaches",
 			},
-			wantWritten: false,
+			wantWritten: true,
 		},
 		{
 			name: "nolog skips entry",
