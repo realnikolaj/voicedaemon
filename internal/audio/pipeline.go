@@ -185,6 +185,23 @@ func (p *Pipeline) StopListening() {
 	}
 }
 
+// PauseMic pauses the portaudio mic stream without stopping the capture goroutine.
+// When paused, no callbacks fire and the captureLoop blocks on the empty channel.
+func (p *Pipeline) PauseMic() error {
+	if p.mic == nil {
+		return nil
+	}
+	return p.mic.Pause()
+}
+
+// ResumeMic resumes the portaudio mic stream after a PauseMic call.
+func (p *Pipeline) ResumeMic() error {
+	if p.mic == nil {
+		return nil
+	}
+	return p.mic.Resume()
+}
+
 // SetMuted enables or disables mic muting. When muted, captured frames are discarded.
 func (p *Pipeline) SetMuted(muted bool) {
 	p.muted.Store(muted)

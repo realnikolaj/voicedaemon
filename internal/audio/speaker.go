@@ -316,6 +316,26 @@ func (s *Speaker) reopenStream() error {
 	return nil
 }
 
+// StopStream stops and closes the current portaudio output stream, setting it to nil.
+// Unlike Close(), this is non-terminal: reopenStream() (called by BeginUtterance)
+// handles a nil stream and will create a fresh one for the next utterance.
+func (s *Speaker) StopStream() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.stream == nil {
+		return
+	}
+	if err := s.stream.Stop(); err != nil {
+		s.logf("speaker: idle stop: %v", err)
+	}
+	if err := s.stream.Close(); err != nil {
+		s.logf("speaker: idle close: %v", err)
+	}
+	s.stream = nil
+	s.logf("speaker: stream stopped (idle)")
+}
+
 // Close shuts down the portaudio output stream.
 func (s *Speaker) Close() error {
 	if s.stream == nil {

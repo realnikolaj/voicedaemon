@@ -49,6 +49,7 @@ type Queue struct {
 	running  bool
 	depth    int
 	curAbort context.CancelFunc
+	onIdle   func()
 }
 
 // QueueConfig holds configuration for the TTS queue.
@@ -58,6 +59,7 @@ type QueueConfig struct {
 	RenderFeeder RenderFeeder
 	LogWriter    *TTSLogWriter
 	Logf         func(string, ...any)
+	OnIdle       func() // called when queue depth reaches zero after processing a job
 }
 
 // NewQueue creates a new TTS job queue.
@@ -74,7 +76,16 @@ func NewQueue(cfg QueueConfig) *Queue {
 		logWriter:    cfg.LogWriter,
 		logf:         logf,
 		jobs:         make(chan Job, 16),
+		onIdle:       cfg.OnIdle,
 	}
+}
+
+// SetOnIdle sets the callback invoked when queue depth reaches zero after a job completes.
+// Must be called before Start.
+func (q *Queue) SetOnIdle(fn func()) {
+	q.mu.Lock()
+	q.onIdle = fn
+	q.mu.Unlock()
 }
 
 // Start begins the queue worker goroutine.
@@ -185,8 +196,12 @@ func (q *Queue) processJob(job Job) {
 		q.mu.Lock()
 		q.curAbort = nil
 		q.depth--
+		idle := q.depth == 0 && q.onIdle != nil
 		q.mu.Unlock()
 		q.logf("tts-queue: job complete: %q", label)
+		if idle {
+			q.onIdle()
+		}
 	}()
 
 	chunks, sampleRate, err := q.client.Stream(jobCtx, job.Text, job.Backend, job.Opts)

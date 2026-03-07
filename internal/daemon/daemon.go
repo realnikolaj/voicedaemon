@@ -60,6 +60,9 @@ type Daemon struct {
 
 	mu          sync.Mutex
 	transcripts []string
+
+	idleMu sync.Mutex
+	idle   bool
 }
 
 // New creates a new daemon with all subsystems wired together.
@@ -156,6 +159,9 @@ func New(cfg Config) (*Daemon, error) {
 	// Wire socket callbacks
 	socketSrv.SetCallbacks(d.onSocketStart, d.onSocketStop, d.onSocketCancel, d.onSocketStatus)
 
+	// Wire TTS queue idle callback — stop speaker stream when queue empties
+	ttsQueue.SetOnIdle(d.onQueueIdle)
+
 	return d, nil
 }
 
@@ -182,6 +188,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err := d.pipeline.Start(d.onUtterance); err != nil {
 		return fmt.Errorf("daemon: start pipeline: %w", err)
 	}
+
+	// 2b. Enter idle state — mic paused until socket "start" command
+	d.enterIdle()
 
 	// 3. Start TTS queue
 	d.ttsQueue.Start()
@@ -235,6 +244,45 @@ func (d *Daemon) Run(ctx context.Context) error {
 	return nil
 }
 
+// enterIdle pauses the mic stream to save CPU when no STT session is active.
+func (d *Daemon) enterIdle() {
+	d.idleMu.Lock()
+	defer d.idleMu.Unlock()
+
+	if d.idle {
+		return
+	}
+	d.idle = true
+
+	if err := d.pipeline.PauseMic(); err != nil {
+		d.logf("daemon: pause mic error: %v", err)
+	}
+	d.logf("daemon: entered idle (mic paused)")
+}
+
+// leaveIdle resumes the mic stream for an active STT session.
+func (d *Daemon) leaveIdle() {
+	d.idleMu.Lock()
+	defer d.idleMu.Unlock()
+
+	if !d.idle {
+		return
+	}
+	d.idle = false
+
+	if err := d.pipeline.ResumeMic(); err != nil {
+		d.logf("daemon: resume mic error: %v", err)
+	}
+	d.logf("daemon: left idle (mic resumed)")
+}
+
+// onQueueIdle is called by the TTS queue when depth reaches zero.
+// It stops the speaker's portaudio stream to avoid writing zeros while idle.
+func (d *Daemon) onQueueIdle() {
+	d.speaker.StopStream()
+	d.logf("daemon: speaker stream stopped (queue idle)")
+}
+
 // onUtterance is called by the audio pipeline when VAD detects a complete utterance.
 func (d *Daemon) onUtterance(samples []float32) {
 	text, err := d.sttClient.Transcribe(context.Background(), samples)
@@ -262,6 +310,7 @@ func (d *Daemon) onSocketStart() {
 	d.transcripts = nil
 	d.mu.Unlock()
 
+	d.leaveIdle()
 	d.pipeline.StartListening()
 	d.logf("daemon: recording started via socket")
 }
@@ -276,6 +325,7 @@ func (d *Daemon) onSocketStop() string {
 	d.transcripts = nil
 	d.mu.Unlock()
 
+	d.enterIdle()
 	d.logf("daemon: recording stopped via socket, transcript: %q", result)
 	return result
 }
@@ -288,6 +338,7 @@ func (d *Daemon) onSocketCancel() {
 	d.transcripts = nil
 	d.mu.Unlock()
 
+	d.enterIdle()
 	d.logf("daemon: recording cancelled via socket")
 }
 

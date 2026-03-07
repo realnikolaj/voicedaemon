@@ -3,6 +3,7 @@ package audio
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/gordonklaus/portaudio"
 )
@@ -15,6 +16,7 @@ type MicStream struct {
 	logf   func(string, ...any)
 	mu     sync.Mutex
 	closed bool
+	paused atomic.Bool
 }
 
 // MicConfig holds configuration for the microphone stream.
@@ -96,6 +98,33 @@ func (m *MicStream) Stop() error {
 	m.mu.Unlock()
 
 	m.logf("mic: capture stopped")
+	return nil
+}
+
+// Pause stops the portaudio stream without closing it or the frames channel.
+// The stream can be resumed later with Resume(). Safe to call multiple times.
+func (m *MicStream) Pause() error {
+	if !m.paused.CompareAndSwap(false, true) {
+		return nil // already paused
+	}
+	if err := m.stream.Stop(); err != nil {
+		m.paused.Store(false)
+		return fmt.Errorf("mic: pause stream: %w", err)
+	}
+	m.logf("mic: capture paused")
+	return nil
+}
+
+// Resume restarts the portaudio stream after a Pause(). Safe to call multiple times.
+func (m *MicStream) Resume() error {
+	if !m.paused.CompareAndSwap(true, false) {
+		return nil // not paused
+	}
+	if err := m.stream.Start(); err != nil {
+		m.paused.Store(true)
+		return fmt.Errorf("mic: resume stream: %w", err)
+	}
+	m.logf("mic: capture resumed")
 	return nil
 }
 
