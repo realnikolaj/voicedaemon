@@ -24,9 +24,18 @@ type Config struct {
 	SpeachesModel string
 	SpeachesVoice string
 	PocketVoice   string
-	TTSLogPath    string
-	Debug         bool
-	Logf          func(string, ...any)
+	SilenceGapMS    int
+	VADModelPath    string
+	SpeechThreshold float64
+	TTSLogPath      string
+	Debug           bool
+	Logf            func(string, ...any)
+
+	// Server-side VAD parameters (passed to Speaches Silero VAD)
+	RemoteVADThreshold     float64
+	RemoteVADMinSilence    int
+	RemoteVADMaxSpeech     float64
+	RemoteVADSpeechPad     int
 }
 
 // DefaultConfig returns daemon config with standard defaults.
@@ -80,6 +89,11 @@ func New(cfg Config) (*Daemon, error) {
 	// Audio pipeline
 	pipeCfg := audio.DefaultPipelineConfig()
 	pipeCfg.Logf = logf
+	if cfg.SilenceGapMS > 0 {
+		pipeCfg.VADConfig.SilenceGapFrames = cfg.SilenceGapMS / 10 // 10ms per frame at 48kHz
+	}
+	pipeCfg.VADModelPath = cfg.VADModelPath
+	pipeCfg.SpeechThreshold = cfg.SpeechThreshold
 	pipeline, err := audio.NewPipeline(pipeCfg, speaker)
 	if err != nil {
 		return nil, fmt.Errorf("daemon: create pipeline: %w", err)
@@ -91,6 +105,10 @@ func New(cfg Config) (*Daemon, error) {
 		Model:    cfg.STTModel,
 		Language: cfg.STTLanguage,
 		Logf:     logf,
+		VADThreshold:          cfg.RemoteVADThreshold,
+		VADMinSilenceDuration: cfg.RemoteVADMinSilence,
+		VADMaxSpeechDuration:  cfg.RemoteVADMaxSpeech,
+		VADSpeechPad:          cfg.RemoteVADSpeechPad,
 	}
 	sttClient := stt.NewClient(sttCfg)
 

@@ -1,4 +1,4 @@
-//go:build !noapm
+//go:build !noapm && !silero
 
 package audio
 
@@ -17,7 +17,8 @@ type Processor struct {
 
 // NewProcessor creates an APM processor with AEC3 enabled.
 // NS: high, AGC2: adaptive digital, high-pass: on, AEC3: on.
-func NewProcessor(logf func(string, ...any)) (*Processor, error) {
+func NewProcessor(cfg PipelineConfig) (*Processor, error) {
+	logf := cfg.Logf
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}

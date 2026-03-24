@@ -34,8 +34,8 @@ const (
 	// DefaultPreBufferFrames is ~320ms of pre-buffer (32 frames × 10ms at 48kHz).
 	DefaultPreBufferFrames = 32
 
-	// DefaultSilenceGapFrames is ~800ms silence gap (80 consecutive non-voice frames × 10ms).
-	DefaultSilenceGapFrames = 80
+	// DefaultSilenceGapFrames is ~1100ms silence gap (110 consecutive non-voice frames × 10ms).
+	DefaultSilenceGapFrames = 110
 )
 
 // VADConfig holds configuration for the VAD state machine.

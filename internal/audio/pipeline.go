@@ -9,10 +9,12 @@ import (
 
 // PipelineConfig holds configuration for the audio pipeline.
 type PipelineConfig struct {
-	MicConfig     MicConfig
-	SpeakerConfig SpeakerConfig
-	VADConfig     VADConfig
-	Logf          func(string, ...any)
+	MicConfig       MicConfig
+	SpeakerConfig   SpeakerConfig
+	VADConfig       VADConfig
+	VADModelPath    string  // Silero ONNX model path (silero build only)
+	SpeechThreshold float64 // Silero speech probability threshold (silero build only)
+	Logf            func(string, ...any)
 }
 
 // DefaultPipelineConfig returns a PipelineConfig with standard defaults.
@@ -56,7 +58,7 @@ func NewPipeline(cfg PipelineConfig, speaker *Speaker) (*Pipeline, error) {
 	cfg.SpeakerConfig.Logf = logf
 	cfg.VADConfig.Logf = logf
 
-	proc, err := NewProcessor(logf)
+	proc, err := NewProcessor(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("pipeline: create processor: %w", err)
 	}
@@ -92,6 +94,12 @@ func (p *Pipeline) Start(onUtterance func(audio []float32)) error {
 		return fmt.Errorf("pipeline: start mic: %w", err)
 	}
 
+	// Start paused — mic only opens when a session begins (StartListening).
+	// This avoids the macOS orange mic indicator when idle.
+	if err := p.mic.Pause(); err != nil {
+		p.logf("pipeline: initial pause: %v", err)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	p.cancel = cancel
 	p.running = true
@@ -99,7 +107,7 @@ func (p *Pipeline) Start(onUtterance func(audio []float32)) error {
 	p.wg.Add(1)
 	go p.captureLoop(ctx)
 
-	p.logf("pipeline: started")
+	p.logf("pipeline: started (mic paused until session)")
 	return nil
 }
 
@@ -127,6 +135,14 @@ func (p *Pipeline) captureLoop(ctx context.Context) {
 				for i := range frame {
 					frame[i] *= float32(g)
 				}
+			}
+
+			// Only run Silero inference when VAD is actively listening.
+			// When idle (no recording session), skip inference entirely
+			// to save CPU/energy on the Intel MacBook.
+			vadState := p.vad.State()
+			if vadState == VadIdle {
+				continue
 			}
 
 			clean, hasVoice, err := p.proc.ProcessCapture(frame)
@@ -171,17 +187,24 @@ func (p *Pipeline) VADState() VadState {
 	return p.vad.State()
 }
 
-// StartListening transitions VAD to listening state.
+// StartListening transitions VAD to listening state and resumes the mic.
 func (p *Pipeline) StartListening() {
+	if err := p.ResumeMic(); err != nil {
+		p.logf("pipeline: resume mic: %v", err)
+	}
 	if p.vad != nil {
 		p.vad.Start()
 	}
 }
 
-// StopListening transitions VAD to idle state.
+// StopListening transitions VAD to idle and pauses the mic.
+// This releases the microphone so macOS hides the orange indicator.
 func (p *Pipeline) StopListening() {
 	if p.vad != nil {
 		p.vad.Stop()
+	}
+	if err := p.PauseMic(); err != nil {
+		p.logf("pipeline: pause mic: %v", err)
 	}
 }
 

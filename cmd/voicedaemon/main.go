@@ -27,8 +27,15 @@ type CLI struct {
 	SpeachesModel string           `help:"Speaches TTS model." default:"speaches-ai/Kokoro-82M-v1.0-ONNX" env:"SPEACHES_MODEL"`
 	SpeachesVoice string           `help:"Speaches TTS voice." default:"af_heart" env:"SPEACHES_VOICE"`
 	PocketVoice   string           `help:"PocketTTS voice." default:"alba" env:"POCKET_TTS_VOICE"`
-	TTSLog        string           `name:"tts-log" help:"Path to TTS JSONL log file (empty=disabled)." default:"" env:"VOICEDAEMON_TTS_LOG"`
-	Debug         bool             `help:"Enable debug logging." default:"false" env:"VOICEDAEMON_DEBUG"`
+	SilenceGapMS    int     `name:"silence-gap" help:"VAD silence gap in milliseconds before utterance ends." default:"1100" env:"VOICEDAEMON_SILENCE_GAP"`
+	VADModel        string  `name:"vad-model" help:"Path to Silero VAD ONNX model (silero build only)." default:"~/.voicedaemon/silero_vad.onnx" env:"VOICEDAEMON_VAD_MODEL"`
+	SpeechThreshold float64 `name:"speech-threshold" help:"Silero speech probability threshold (0.0-1.0)." default:"0.35" env:"VOICEDAEMON_SPEECH_THRESHOLD"`
+	TTSLog          string  `name:"tts-log" help:"Path to TTS JSONL log file (empty=disabled)." default:"" env:"VOICEDAEMON_TTS_LOG"`
+	VADThreshold    float64 `name:"vad-threshold" help:"Server-side Silero VAD threshold (0-1, 0=server default)." default:"0" env:"VOICEDAEMON_VAD_THRESHOLD"`
+	VADMinSilence   int     `name:"vad-silence" help:"Server-side min silence between segments (ms, 0=server default)." default:"0" env:"VOICEDAEMON_VAD_SILENCE"`
+	VADMaxSpeech    float64 `name:"vad-max-speech" help:"Server-side max speech chunk duration (seconds, 0=server default)." default:"0" env:"VOICEDAEMON_VAD_MAX_SPEECH"`
+	VADSpeechPad    int     `name:"vad-pad" help:"Server-side speech padding (ms, 0=server default)." default:"0" env:"VOICEDAEMON_VAD_PAD"`
+	Debug           bool    `help:"Enable debug logging." default:"false" env:"VOICEDAEMON_DEBUG"`
 }
 
 func main() {
@@ -58,7 +65,14 @@ func main() {
 		SpeachesModel: cli.SpeachesModel,
 		SpeachesVoice: cli.SpeachesVoice,
 		PocketVoice:   cli.PocketVoice,
-		TTSLogPath:    cli.TTSLog,
+		SilenceGapMS:    cli.SilenceGapMS,
+		VADModelPath:    cli.VADModel,
+		SpeechThreshold: cli.SpeechThreshold,
+		TTSLogPath:      cli.TTSLog,
+		RemoteVADThreshold:  cli.VADThreshold,
+		RemoteVADMinSilence: cli.VADMinSilence,
+		RemoteVADMaxSpeech:  cli.VADMaxSpeech,
+		RemoteVADSpeechPad:  cli.VADSpeechPad,
 		Debug:         cli.Debug,
 		Logf:          logf,
 	}

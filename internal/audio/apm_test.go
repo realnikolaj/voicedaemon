@@ -1,4 +1,4 @@
-//go:build !noapm
+//go:build !noapm && !silero
 
 package audio
 
@@ -12,7 +12,7 @@ func TestAPMProcessorCreateClose(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := NewProcessor(t.Logf)
+			p, err := NewProcessor(PipelineConfig{Logf: t.Logf})
 			if err != nil {
 				t.Fatalf("NewProcessor() error: %v", err)
 			}
@@ -33,7 +33,7 @@ func TestAPMProcessCapture(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := NewProcessor(t.Logf)
+			p, err := NewProcessor(PipelineConfig{Logf: t.Logf})
 			if err != nil {
 				t.Fatalf("NewProcessor() error: %v", err)
 			}
@@ -56,7 +56,7 @@ func TestAPMProcessCaptureReturnsNewSlice(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := NewProcessor(t.Logf)
+			p, err := NewProcessor(PipelineConfig{Logf: t.Logf})
 			if err != nil {
 				t.Fatalf("NewProcessor() error: %v", err)
 			}
@@ -90,7 +90,7 @@ func TestAPMProcessRender(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := NewProcessor(t.Logf)
+			p, err := NewProcessor(PipelineConfig{Logf: t.Logf})
 			if err != nil {
 				t.Fatalf("NewProcessor() error: %v", err)
 			}
@@ -115,7 +115,7 @@ func TestAPMProcessClosedProcessor(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := NewProcessor(t.Logf)
+			p, err := NewProcessor(PipelineConfig{Logf: t.Logf})
 			if err != nil {
 				t.Fatalf("NewProcessor() error: %v", err)
 			}
@@ -143,7 +143,7 @@ func TestAPMDoubleClose(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := NewProcessor(t.Logf)
+			p, err := NewProcessor(PipelineConfig{Logf: t.Logf})
 			if err != nil {
 				t.Fatalf("NewProcessor() error: %v", err)
 			}

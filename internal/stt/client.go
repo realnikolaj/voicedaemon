@@ -22,6 +22,13 @@ type ClientConfig struct {
 	Language string
 	Timeout  time.Duration
 	Logf     func(string, ...any)
+
+	// VAD parameters passed to Speaches server-side Silero VAD.
+	// These only apply when the server has _UNSTABLE_VAD_FILTER=True.
+	VADThreshold          float64 // Speech probability threshold (0-1, default 0.5)
+	VADMinSilenceDuration int     // Min silence between segments in ms (default 160)
+	VADMaxSpeechDuration  float64 // Max speech chunk duration in seconds (default 30)
+	VADSpeechPad          int     // Padding around speech segments in ms (default 400)
 }
 
 // DefaultClientConfig returns STT client config with standard defaults.
@@ -94,6 +101,20 @@ func (c *Client) Transcribe(ctx context.Context, samples []float32) (string, err
 	}
 	if err := writer.WriteField("language", c.cfg.Language); err != nil {
 		return "", fmt.Errorf("stt: write language field: %w", err)
+	}
+
+	// Server-side VAD parameters (Speaches Silero VAD v5)
+	if c.cfg.VADThreshold > 0 {
+		writer.WriteField("vad_threshold", fmt.Sprintf("%.2f", c.cfg.VADThreshold))
+	}
+	if c.cfg.VADMinSilenceDuration > 0 {
+		writer.WriteField("min_silence_duration_ms", fmt.Sprintf("%d", c.cfg.VADMinSilenceDuration))
+	}
+	if c.cfg.VADMaxSpeechDuration > 0 {
+		writer.WriteField("max_speech_duration_s", fmt.Sprintf("%.1f", c.cfg.VADMaxSpeechDuration))
+	}
+	if c.cfg.VADSpeechPad > 0 {
+		writer.WriteField("speech_pad_ms", fmt.Sprintf("%d", c.cfg.VADSpeechPad))
 	}
 
 	if err := writer.Close(); err != nil {
