@@ -210,6 +210,27 @@ func (c *Client) readLoop() {
 			return
 		}
 
+		// Log event type for debugging.
+		var ev struct{ Type string `json:"type"` }
+		if json.Unmarshal(message, &ev) == nil && ev.Type != "" {
+			switch ev.Type {
+			case "input_audio_buffer.speech_started":
+				c.logf("rtc: speech started")
+			case "input_audio_buffer.speech_stopped":
+				c.logf("rtc: speech stopped")
+			case "input_audio_buffer.committed":
+				c.logf("rtc: buffer committed")
+			case "conversation.item.input_audio_transcription.completed":
+				// handled below
+			case "session.created", "session.updated":
+				c.logf("rtc: %s", ev.Type)
+			case "error":
+				c.logf("rtc: server error: %s", string(message))
+			default:
+				c.logf("rtc: event: %s", ev.Type)
+			}
+		}
+
 		text := extractTranscript(message)
 		if text == "" {
 			continue
