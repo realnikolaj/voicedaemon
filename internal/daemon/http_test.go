@@ -103,7 +103,7 @@ func TestHTTPHealth(t *testing.T) {
 	}
 
 	// Verify all expected fields
-	for _, field := range []string{"queue_depth", "speaches_url", "pocket_tts_url", "stt_url", "stt_socket"} {
+	for _, field := range []string{"queue_depth", "speaches_url", "pocket_tts_url", "stt_socket"} {
 		if _, ok := body[field]; !ok {
 			t.Errorf("missing field %q in health response", field)
 		}
@@ -455,7 +455,6 @@ func TestHTTPConfig(t *testing.T) {
 		"gain":           2.0,
 		"speaches_url":   "http://localhost:34331",
 		"pocket_tts_url": "http://localhost:49112",
-		"stt_url":        "http://localhost:34331",
 		"port":           float64(0), // test uses port 0 for random assignment
 	}
 	for k, want := range checks {

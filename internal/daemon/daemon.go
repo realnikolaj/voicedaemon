@@ -18,18 +18,15 @@ type Config struct {
 	SocketPath    string
 	SpeachesURL   string
 	PocketTTSURL  string
-	STTURL        string
 	STTModel      string
 	STTLanguage   string
 	SpeachesModel string
 	SpeachesVoice string
 	PocketVoice   string
-	SilenceGapMS    int
-	VADModelPath    string
-	SpeechThreshold float64
-	TTSLogPath      string
-	Debug           bool
-	Logf            func(string, ...any)
+	SilenceGapMS  int
+	TTSLogPath    string
+	Debug         bool
+	Logf          func(string, ...any)
 }
 
 // DefaultConfig returns daemon config with standard defaults.
@@ -39,7 +36,6 @@ func DefaultConfig() Config {
 		SocketPath:    "/tmp/voice-daemon.sock",
 		SpeachesURL:   "http://localhost:34331",
 		PocketTTSURL:  "http://localhost:49112",
-		STTURL:        "http://localhost:34331",
 		STTModel:      "deepdml/faster-whisper-large-v3-turbo-ct2",
 		STTLanguage:   "en",
 		SpeachesModel: "speaches-ai/Kokoro-82M-v1.0-ONNX",
@@ -86,8 +82,6 @@ func New(cfg Config) (*Daemon, error) {
 	if cfg.SilenceGapMS > 0 {
 		pipeCfg.VADConfig.SilenceGapFrames = cfg.SilenceGapMS / 10 // 10ms per frame at 48kHz
 	}
-	pipeCfg.VADModelPath = cfg.VADModelPath
-	pipeCfg.SpeechThreshold = cfg.SpeechThreshold
 	pipeline, err := audio.NewPipeline(pipeCfg, speaker)
 	if err != nil {
 		return nil, fmt.Errorf("daemon: create pipeline: %w", err)
@@ -95,7 +89,7 @@ func New(cfg Config) (*Daemon, error) {
 
 	// STT client
 	sttCfg := stt.ClientConfig{
-		URL:      cfg.STTURL,
+		URL:      cfg.SpeachesURL,
 		Model:    cfg.STTModel,
 		Language: cfg.STTLanguage,
 		Logf:     logf,
@@ -145,7 +139,6 @@ func New(cfg Config) (*Daemon, error) {
 		Port:         cfg.Port,
 		SpeachesURL:  cfg.SpeachesURL,
 		PocketTTSURL: cfg.PocketTTSURL,
-		STTURL:       cfg.STTURL,
 		SocketPath:   cfg.SocketPath,
 		Logf:         logf,
 	}

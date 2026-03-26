@@ -17,7 +17,6 @@ type HTTPConfig struct {
 	Port         int
 	SpeachesURL  string
 	PocketTTSURL string
-	STTURL       string
 	SocketPath   string
 	Logf         func(string, ...any)
 }
@@ -28,7 +27,6 @@ func DefaultHTTPConfig() HTTPConfig {
 		Port:         5111,
 		SpeachesURL:  "http://localhost:34331",
 		PocketTTSURL: "http://localhost:49112",
-		STTURL:       "http://localhost:34331",
 		SocketPath:   "/tmp/voice-daemon.sock",
 	}
 }
@@ -178,7 +176,6 @@ func (h *HTTPServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		"queue_depth":    h.queue.Depth(),
 		"speaches_url":   h.cfg.SpeachesURL,
 		"pocket_tts_url": h.cfg.PocketTTSURL,
-		"stt_url":        h.cfg.STTURL,
 		"stt_socket":     h.cfg.SocketPath,
 	})
 }
@@ -243,7 +240,6 @@ func (h *HTTPServer) handleConfig(w http.ResponseWriter, _ *http.Request) {
 		"gain":           h.pipeline.Gain(),
 		"speaches_url":   h.cfg.SpeachesURL,
 		"pocket_tts_url": h.cfg.PocketTTSURL,
-		"stt_url":        h.cfg.STTURL,
 		"port":           h.cfg.Port,
 	})
 }

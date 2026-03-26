@@ -9,12 +9,10 @@ import (
 
 // PipelineConfig holds configuration for the audio pipeline.
 type PipelineConfig struct {
-	MicConfig       MicConfig
-	SpeakerConfig   SpeakerConfig
-	VADConfig       VADConfig
-	VADModelPath    string  // Silero ONNX model path (silero build only)
-	SpeechThreshold float64 // Silero speech probability threshold (silero build only)
-	Logf            func(string, ...any)
+	MicConfig     MicConfig
+	SpeakerConfig SpeakerConfig
+	VADConfig     VADConfig
+	Logf          func(string, ...any)
 }
 
 // DefaultPipelineConfig returns a PipelineConfig with standard defaults.
