@@ -8,6 +8,7 @@ import (
 
 	"github.com/gordonklaus/portaudio"
 	"github.com/realnikolaj/voicedaemon/internal/audio"
+	"github.com/realnikolaj/voicedaemon/internal/rtc"
 	"github.com/realnikolaj/voicedaemon/internal/stt"
 	"github.com/realnikolaj/voicedaemon/internal/tts"
 )
@@ -62,6 +63,10 @@ type Daemon struct {
 
 	idleMu sync.Mutex
 	idle   bool
+
+	// WebRTC realtime STT session (active during recording).
+	rtcClient    *rtc.Client
+	rtcCancel    context.CancelFunc
 }
 
 // New creates a new daemon with all subsystems wired together.
@@ -317,14 +322,88 @@ func (d *Daemon) onSocketStart() {
 	d.mu.Unlock()
 
 	d.leaveIdle()
+
+	// Open WebRTC realtime session for STT.
+	rtcCfg := rtc.ClientConfig{
+		SpeachesURL: d.cfg.SpeachesURL,
+		Model:       d.cfg.STTModel,
+		Language:    d.cfg.STTLanguage,
+		Logf:        d.logf,
+	}
+	client := rtc.NewClient(rtcCfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := client.Connect(ctx); err != nil {
+		d.logf("daemon: WebRTC connect failed, falling back to batch STT: %v", err)
+		cancel()
+		// Fallback: use the batch HTTP pipeline as before.
+		d.pipeline.StartListening()
+		return
+	}
+
+	d.mu.Lock()
+	d.rtcClient = client
+	d.rtcCancel = cancel
+	d.mu.Unlock()
+
+	// Feed audio frames from pipeline to WebRTC track.
+	d.pipeline.SetAudioSink(func(frame []float32) {
+		if err := client.SendAudio(frame); err != nil {
+			d.logf("daemon: rtc SendAudio error: %v", err)
+		}
+	})
 	d.pipeline.StartListening()
-	d.logf("daemon: recording started via socket")
+
+	// Listen for transcripts from the WebRTC data channel.
+	go d.rtcTranscriptLoop(client)
+
+	d.logf("daemon: recording started via WebRTC realtime")
+}
+
+// closeRTC tears down the active WebRTC session, if any.
+func (d *Daemon) closeRTC() {
+	d.mu.Lock()
+	client := d.rtcClient
+	cancel := d.rtcCancel
+	d.rtcClient = nil
+	d.rtcCancel = nil
+	d.mu.Unlock()
+
+	d.pipeline.SetAudioSink(nil)
+
+	if cancel != nil {
+		cancel()
+	}
+	if client != nil {
+		if err := client.Close(); err != nil {
+			d.logf("daemon: rtc close: %v", err)
+		}
+	}
+}
+
+// rtcTranscriptLoop reads transcripts from the WebRTC data channel and
+// pushes them through the same path as batch STT (socket + SSE broadcast).
+func (d *Daemon) rtcTranscriptLoop(client *rtc.Client) {
+	for text := range client.Transcripts() {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+
+		d.mu.Lock()
+		d.transcripts = append(d.transcripts, text)
+		d.mu.Unlock()
+
+		d.socketSrv.PushTranscript(text)
+		d.httpSrv.BroadcastTranscript(text)
+	}
 }
 
 // onSocketStop handles the "stop" command from the socket.
 // Returns all accumulated transcripts joined with spaces.
 func (d *Daemon) onSocketStop() string {
 	d.pipeline.StopListening()
+	d.closeRTC()
 
 	d.mu.Lock()
 	result := strings.Join(d.transcripts, " ")
@@ -339,6 +418,7 @@ func (d *Daemon) onSocketStop() string {
 // onSocketCancel handles the "cancel" command from the socket.
 func (d *Daemon) onSocketCancel() {
 	d.pipeline.StopListening()
+	d.closeRTC()
 
 	d.mu.Lock()
 	d.transcripts = nil

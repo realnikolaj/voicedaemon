@@ -42,6 +42,9 @@ type Pipeline struct {
 	muted  atomic.Bool
 	gainMu sync.Mutex
 	gain   float64
+
+	sinkMu sync.Mutex
+	sink   func([]float32) // optional audio sink (e.g. WebRTC track)
 }
 
 // NewPipeline creates a new audio pipeline.
@@ -109,7 +112,8 @@ func (p *Pipeline) Start(onUtterance func(audio []float32)) error {
 	return nil
 }
 
-// captureLoop reads frames from mic, processes through APM, and feeds VAD.
+// captureLoop reads frames from mic, processes through APM, feeds VAD,
+// and optionally forwards raw audio to the WebRTC audio sink.
 func (p *Pipeline) captureLoop(ctx context.Context) {
 	defer p.wg.Done()
 
@@ -135,9 +139,16 @@ func (p *Pipeline) captureLoop(ctx context.Context) {
 				}
 			}
 
-			// Only run Silero inference when VAD is actively listening.
-			// When idle (no recording session), skip inference entirely
-			// to save CPU/energy on the Intel MacBook.
+			// Forward raw audio to the WebRTC sink (if set).
+			// This runs before VAD gating so every frame reaches the server.
+			p.sinkMu.Lock()
+			sink := p.sink
+			p.sinkMu.Unlock()
+			if sink != nil {
+				sink(frame)
+			}
+
+			// Skip local VAD processing when idle.
 			vadState := p.vad.State()
 			if vadState == VadIdle {
 				continue
@@ -247,6 +258,15 @@ func (p *Pipeline) Gain() float64 {
 	p.gainMu.Lock()
 	defer p.gainMu.Unlock()
 	return p.gain
+}
+
+// SetAudioSink sets a callback that receives every captured audio frame.
+// Used by the WebRTC client to stream audio to the Speaches realtime endpoint.
+// Pass nil to remove the sink.
+func (p *Pipeline) SetAudioSink(fn func([]float32)) {
+	p.sinkMu.Lock()
+	p.sink = fn
+	p.sinkMu.Unlock()
 }
 
 // SetVADThreshold delegates to the audio processor's VAD threshold setter.
