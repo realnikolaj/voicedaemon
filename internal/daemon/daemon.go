@@ -30,12 +30,6 @@ type Config struct {
 	TTSLogPath      string
 	Debug           bool
 	Logf            func(string, ...any)
-
-	// Server-side VAD parameters (passed to Speaches Silero VAD)
-	RemoteVADThreshold     float64
-	RemoteVADMinSilence    int
-	RemoteVADMaxSpeech     float64
-	RemoteVADSpeechPad     int
 }
 
 // DefaultConfig returns daemon config with standard defaults.
@@ -105,10 +99,6 @@ func New(cfg Config) (*Daemon, error) {
 		Model:    cfg.STTModel,
 		Language: cfg.STTLanguage,
 		Logf:     logf,
-		VADThreshold:          cfg.RemoteVADThreshold,
-		VADMinSilenceDuration: cfg.RemoteVADMinSilence,
-		VADMaxSpeechDuration:  cfg.RemoteVADMaxSpeech,
-		VADSpeechPad:          cfg.RemoteVADSpeechPad,
 	}
 	sttClient := stt.NewClient(sttCfg)
 
@@ -302,24 +292,29 @@ func (d *Daemon) onQueueIdle() {
 }
 
 // onUtterance is called by the audio pipeline when VAD detects a complete utterance.
+// Transcription runs in a goroutine so the capture loop and VAD are never blocked
+// waiting for the HTTP round-trip to Speaches. Multiple utterances can transcribe
+// concurrently, taking advantage of Speaches' multi-worker support.
 func (d *Daemon) onUtterance(samples []float32) {
-	text, err := d.sttClient.Transcribe(context.Background(), samples)
-	if err != nil {
-		d.logf("daemon: transcribe error: %v", err)
-		return
-	}
+	go func() {
+		text, err := d.sttClient.Transcribe(context.Background(), samples)
+		if err != nil {
+			d.logf("daemon: transcribe error: %v", err)
+			return
+		}
 
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return
-	}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return
+		}
 
-	d.mu.Lock()
-	d.transcripts = append(d.transcripts, text)
-	d.mu.Unlock()
+		d.mu.Lock()
+		d.transcripts = append(d.transcripts, text)
+		d.mu.Unlock()
 
-	d.socketSrv.PushTranscript(text)
-	d.httpSrv.BroadcastTranscript(text)
+		d.socketSrv.PushTranscript(text)
+		d.httpSrv.BroadcastTranscript(text)
+	}()
 }
 
 // onSocketStart handles the "start" command from the socket.

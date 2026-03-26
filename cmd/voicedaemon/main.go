@@ -31,10 +31,6 @@ type CLI struct {
 	VADModel        string  `name:"vad-model" help:"Path to Silero VAD ONNX model (silero build only)." default:"~/.voicedaemon/silero_vad.onnx" env:"VOICEDAEMON_VAD_MODEL"`
 	SpeechThreshold float64 `name:"speech-threshold" help:"Silero speech probability threshold (0.0-1.0)." default:"0.35" env:"VOICEDAEMON_SPEECH_THRESHOLD"`
 	TTSLog          string  `name:"tts-log" help:"Path to TTS JSONL log file (empty=disabled)." default:"" env:"VOICEDAEMON_TTS_LOG"`
-	VADThreshold    float64 `name:"vad-threshold" help:"Server-side Silero VAD threshold (0-1, 0=server default)." default:"0" env:"VOICEDAEMON_VAD_THRESHOLD"`
-	VADMinSilence   int     `name:"vad-silence" help:"Server-side min silence between segments (ms, 0=server default)." default:"0" env:"VOICEDAEMON_VAD_SILENCE"`
-	VADMaxSpeech    float64 `name:"vad-max-speech" help:"Server-side max speech chunk duration (seconds, 0=server default)." default:"0" env:"VOICEDAEMON_VAD_MAX_SPEECH"`
-	VADSpeechPad    int     `name:"vad-pad" help:"Server-side speech padding (ms, 0=server default)." default:"0" env:"VOICEDAEMON_VAD_PAD"`
 	Debug           bool    `help:"Enable debug logging." default:"false" env:"VOICEDAEMON_DEBUG"`
 }
 
@@ -69,10 +65,6 @@ func main() {
 		VADModelPath:    cli.VADModel,
 		SpeechThreshold: cli.SpeechThreshold,
 		TTSLogPath:      cli.TTSLog,
-		RemoteVADThreshold:  cli.VADThreshold,
-		RemoteVADMinSilence: cli.VADMinSilence,
-		RemoteVADMaxSpeech:  cli.VADMaxSpeech,
-		RemoteVADSpeechPad:  cli.VADSpeechPad,
 		Debug:         cli.Debug,
 		Logf:          logf,
 	}
