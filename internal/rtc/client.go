@@ -1,48 +1,45 @@
 package rtc
 
 import (
-	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
+	"math"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/pion/webrtc/v3"
+	"github.com/gorilla/websocket"
 )
 
 const (
-	dataChannelLabel        = "oai-events"
-	dcOpenTimeout           = 10 * time.Second
-	defaultVADThreshold     = 0.9
-	defaultVADSilenceDurMs  = 1500
+	defaultVADThreshold    = 0.9
+	defaultVADSilenceDurMs = 1500
+	wsSampleRate           = 24000 // OpenAI realtime API expects 24kHz
 )
 
-// ClientConfig holds configuration for the WebRTC realtime STT client.
+// ClientConfig holds configuration for the WebSocket realtime STT client.
 type ClientConfig struct {
 	SpeachesURL  string
 	Model        string
 	Language     string
-	VADThreshold float64 // Server-side Silero VAD threshold (0-1, default 0.9)
-	VADSilenceMs int     // Server-side silence duration before cut (ms, default 1500)
+	VADThreshold float64
+	VADSilenceMs int
 	Logf         func(string, ...any)
 }
 
-// Client manages a single WebRTC session with the Speaches realtime endpoint.
-// Audio is streamed via an Opus track; transcripts arrive over the oai-events
-// data channel. Call Connect to establish the session, then feed audio frames
-// via SendAudio. Transcripts are available on the channel returned by Transcripts.
+// Client manages a WebSocket session with the Speaches realtime endpoint.
+// Audio is sent as base64-encoded 24kHz PCM via input_audio_buffer.append.
+// Transcripts arrive as conversation.item.input_audio_transcription.completed.
 type Client struct {
 	cfg  ClientConfig
 	logf func(string, ...any)
 
-	pc         *webrtc.PeerConnection
-	dc         *webrtc.DataChannel
-	audioTrack *webrtc.TrackLocalStaticSample
-	enc        *opusEncoder
-	asm        *reassembler
+	conn    *websocket.Conn
+	writeMu sync.Mutex // serialise WebSocket writes
 
 	transcripts chan string
 
@@ -50,7 +47,7 @@ type Client struct {
 	closed bool
 }
 
-// NewClient returns a Client that is ready to connect.
+// NewClient returns a Client ready to connect.
 func NewClient(cfg ClientConfig) *Client {
 	logf := cfg.Logf
 	if logf == nil {
@@ -59,207 +56,103 @@ func NewClient(cfg ClientConfig) *Client {
 	return &Client{
 		cfg:         cfg,
 		logf:        logf,
-		asm:         newReassembler(),
 		transcripts: make(chan string, 64),
 	}
 }
 
-// Connect establishes the WebRTC session. It blocks until the data channel
-// is open and the session.update has been sent, or until ctx is cancelled.
+// Connect establishes the WebSocket session. Blocks until connected and
+// session.update is sent, or until ctx is cancelled.
 func (c *Client) Connect(ctx context.Context) error {
-	// Register only Opus with empty parameters to match aiortc's SDP answer.
-	// aiortc strips fmtp parameters; pion's default Opus registration includes
-	// "minptime=10;useinbandfec=1" which causes a payload type mismatch.
-	me := &webrtc.MediaEngine{}
-	if err := me.RegisterCodec(webrtc.RTPCodecParameters{
-		RTPCodecCapability: webrtc.RTPCodecCapability{
-			MimeType:  webrtc.MimeTypeOpus,
-			ClockRate: 48000,
-			Channels:  2,
-		},
-		PayloadType: 111,
-	}, webrtc.RTPCodecTypeAudio); err != nil {
-		return fmt.Errorf("rtc: register opus codec: %w", err)
-	}
+	wsURL := strings.Replace(c.cfg.SpeachesURL, "https://", "wss://", 1)
+	wsURL = strings.Replace(wsURL, "http://", "ws://", 1)
+	wsURL += "/v1/realtime?model=" + c.cfg.Model + "&intent=transcription"
 
-	api := webrtc.NewAPI(webrtc.WithMediaEngine(me))
-	pc, err := api.NewPeerConnection(webrtc.Configuration{})
+	c.logf("rtc: dialing %s", wsURL)
+
+	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+	conn, _, err := dialer.DialContext(ctx, wsURL, http.Header{})
 	if err != nil {
-		return fmt.Errorf("rtc: peer connection: %w", err)
-	}
-
-	// Opus audio track — 48kHz stereo, required by aiortc on the server.
-	audioTrack, err := webrtc.NewTrackLocalStaticSample(
-		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2},
-		"audio", "voicedaemon-mic",
-	)
-	if err != nil {
-		pc.Close()
-		return fmt.Errorf("rtc: audio track: %w", err)
-	}
-	if _, err := pc.AddTrack(audioTrack); err != nil {
-		pc.Close()
-		return fmt.Errorf("rtc: add track: %w", err)
-	}
-
-	enc, err := newOpusEncoder()
-	if err != nil {
-		pc.Close()
-		return fmt.Errorf("rtc: opus encoder: %w", err)
-	}
-
-	// Data channel — must be created by the offerer (us).
-	dc, err := pc.CreateDataChannel(dataChannelLabel, nil)
-	if err != nil {
-		pc.Close()
-		return fmt.Errorf("rtc: data channel: %w", err)
-	}
-
-	dcOpen := make(chan struct{}, 1)
-	dc.OnOpen(func() {
-		c.logf("rtc: data channel open")
-		select {
-		case dcOpen <- struct{}{}:
-		default:
-		}
-	})
-	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		c.handleMessage(msg.Data)
-	})
-	dc.OnClose(func() { c.logf("rtc: data channel closed") })
-
-	// Build offer.
-	offer, err := pc.CreateOffer(nil)
-	if err != nil {
-		pc.Close()
-		return fmt.Errorf("rtc: create offer: %w", err)
-	}
-
-	// Wait for full ICE gathering before sending SDP — aiortc has no trickle ICE.
-	gatherDone := webrtc.GatheringCompletePromise(pc)
-	if err := pc.SetLocalDescription(offer); err != nil {
-		pc.Close()
-		return fmt.Errorf("rtc: set local description: %w", err)
-	}
-	select {
-	case <-gatherDone:
-	case <-ctx.Done():
-		pc.Close()
-		return ctx.Err()
-	}
-
-	sdpAnswer, err := c.postSDP(ctx, pc.LocalDescription().SDP)
-	if err != nil {
-		pc.Close()
-		return err
-	}
-
-	if err := pc.SetRemoteDescription(webrtc.SessionDescription{
-		Type: webrtc.SDPTypeAnswer,
-		SDP:  sdpAnswer,
-	}); err != nil {
-		pc.Close()
-		return fmt.Errorf("rtc: set remote description: %w", err)
-	}
-
-	select {
-	case <-dcOpen:
-	case <-time.After(dcOpenTimeout):
-		pc.Close()
-		return fmt.Errorf("rtc: timeout waiting for data channel to open")
-	case <-ctx.Done():
-		pc.Close()
-		return ctx.Err()
-	}
-
-	if err := c.sendSessionUpdate(dc); err != nil {
-		pc.Close()
-		return fmt.Errorf("rtc: session.update: %w", err)
+		return fmt.Errorf("rtc: websocket dial: %w", err)
 	}
 
 	c.mu.Lock()
-	c.pc = pc
-	c.dc = dc
-	c.audioTrack = audioTrack
-	c.enc = enc
+	c.conn = conn
 	c.mu.Unlock()
+
+	if err := c.sendSessionUpdate(); err != nil {
+		conn.Close()
+		return fmt.Errorf("rtc: session.update: %w", err)
+	}
+
+	go c.readLoop()
 
 	t := c.cfg.VADThreshold
 	if t <= 0 { t = defaultVADThreshold }
 	s := c.cfg.VADSilenceMs
 	if s <= 0 { s = defaultVADSilenceDurMs }
-	c.logf("rtc: connected (model=%s, vad_threshold=%.2f, vad_silence=%dms)", c.cfg.Model, t, s)
+	c.logf("rtc: connected (model=%s, vad=%.2f, silence=%dms)", c.cfg.Model, t, s)
 	return nil
 }
 
 // SendAudio accepts a mono 480-sample (10ms at 48kHz) float32 frame,
-// encodes it as Opus stereo, and writes it to the WebRTC audio track.
+// resamples to 24kHz, encodes as 16-bit PCM, base64-encodes, and sends
+// via input_audio_buffer.append.
 func (c *Client) SendAudio(mono []float32) error {
 	c.mu.Lock()
-	track := c.audioTrack
-	enc := c.enc
+	conn := c.conn
 	c.mu.Unlock()
-
-	if track == nil || enc == nil {
+	if conn == nil {
 		return nil
 	}
-	return enc.writeTo(mono, track)
+
+	// Resample 48kHz → 24kHz (drop every other sample).
+	n24 := len(mono) / 2
+	pcm := make([]byte, n24*2)
+	for i := 0; i < n24; i++ {
+		s := mono[i*2]
+		if s > 1.0 {
+			s = 1.0
+		} else if s < -1.0 {
+			s = -1.0
+		}
+		binary.LittleEndian.PutUint16(pcm[i*2:], uint16(int16(s*math.MaxInt16)))
+	}
+
+	b64 := base64.StdEncoding.EncodeToString(pcm)
+	msg, _ := json.Marshal(map[string]string{
+		"type":  "input_audio_buffer.append",
+		"audio": b64,
+	})
+
+	c.writeMu.Lock()
+	err := conn.WriteMessage(websocket.TextMessage, msg)
+	c.writeMu.Unlock()
+	return err
 }
 
-// Transcripts returns a channel on which completed transcripts are sent.
-// The channel is never closed — callers should stop reading when Close is called.
+// Transcripts returns the channel on which completed transcripts are delivered.
 func (c *Client) Transcripts() <-chan string {
 	return c.transcripts
 }
 
-// Close tears down the peer connection and frees resources.
+// Close tears down the WebSocket connection.
 func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
 	if c.closed {
 		return nil
 	}
 	c.closed = true
-
-	if c.enc != nil {
-		c.enc.close()
-		c.enc = nil
-	}
-	if c.pc != nil {
-		err := c.pc.Close()
-		c.pc = nil
-		c.audioTrack = nil
-		c.dc = nil
+	if c.conn != nil {
+		err := c.conn.Close()
+		c.conn = nil
 		return err
 	}
 	return nil
 }
 
-// postSDP sends the SDP offer to Speaches and returns the SDP answer text.
-func (c *Client) postSDP(ctx context.Context, sdpOffer string) (string, error) {
-	url := c.cfg.SpeachesURL + "/v1/realtime?model=" + c.cfg.Model
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBufferString(sdpOffer))
-	if err != nil {
-		return "", fmt.Errorf("rtc: build SDP request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/sdp")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("rtc: POST /v1/realtime: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return "", fmt.Errorf("rtc: POST /v1/realtime: HTTP %d: %s", resp.StatusCode, body)
-	}
-	return string(body), nil
-}
-
 // sendSessionUpdate configures transcription-only mode with server-side VAD.
-func (c *Client) sendSessionUpdate(dc *webrtc.DataChannel) error {
+func (c *Client) sendSessionUpdate() error {
 	threshold := c.cfg.VADThreshold
 	if threshold <= 0 {
 		threshold = defaultVADThreshold
@@ -284,31 +177,36 @@ func (c *Client) sendSessionUpdate(dc *webrtc.DataChannel) error {
 			},
 		},
 	}
-	b, err := json.Marshal(msg)
+	data, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}
-	return dc.SendText(string(b))
+	return c.conn.WriteMessage(websocket.TextMessage, data)
 }
 
-// handleMessage decodes one data channel message and forwards any transcript.
-func (c *Client) handleMessage(raw []byte) {
-	payload, err := c.asm.feed(raw)
-	if err != nil {
-		c.logf("rtc: fragment error: %v", err)
-		return
-	}
-	if payload == nil {
-		return
-	}
-	text := extractTranscript(payload)
-	if text == "" {
-		return
-	}
-	c.logf("rtc: transcript: %q", text)
-	select {
-	case c.transcripts <- text:
-	default:
-		c.logf("rtc: transcript channel full, dropping")
+// readLoop reads WebSocket messages and extracts transcripts.
+func (c *Client) readLoop() {
+	for {
+		_, message, err := c.conn.ReadMessage()
+		if err != nil {
+			c.mu.Lock()
+			closed := c.closed
+			c.mu.Unlock()
+			if !closed {
+				c.logf("rtc: websocket read: %v", err)
+			}
+			return
+		}
+
+		text := extractTranscript(message)
+		if text == "" {
+			continue
+		}
+		c.logf("rtc: transcript: %q", text)
+		select {
+		case c.transcripts <- text:
+		default:
+			c.logf("rtc: transcript channel full, dropping")
+		}
 	}
 }
