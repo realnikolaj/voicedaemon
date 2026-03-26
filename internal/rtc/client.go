@@ -19,6 +19,8 @@ const (
 	defaultVADThreshold    = 0.9
 	defaultVADSilenceDurMs = 1500
 	wsSampleRate           = 24000 // OpenAI realtime API expects 24kHz
+	audioChunkFrames       = 10    // accumulate 10 portaudio frames before sending
+	audioChunkBytes        = 240 * 2 * audioChunkFrames // 240 samples/frame at 24kHz × 2 bytes × 10 frames = 4800
 )
 
 // ClientConfig holds configuration for the WebSocket realtime STT client.
@@ -40,6 +42,9 @@ type Client struct {
 
 	conn    *websocket.Conn
 	writeMu sync.Mutex // serialise WebSocket writes
+
+	audioBuf [audioChunkBytes]byte // accumulation buffer for 24kHz PCM
+	audioPos int                    // write position in audioBuf
 
 	transcripts chan string
 
@@ -94,9 +99,9 @@ func (c *Client) Connect(ctx context.Context) error {
 	return nil
 }
 
-// SendAudio accepts a mono 480-sample (10ms at 48kHz) float32 frame,
-// resamples to 24kHz, encodes as 16-bit PCM, base64-encodes, and sends
-// via input_audio_buffer.append.
+// SendAudio accepts a mono 480-sample (10ms at 48kHz) float32 frame.
+// Frames are accumulated into ~100ms chunks before sending to reduce
+// WebSocket message rate from 100/s to 10/s.
 func (c *Client) SendAudio(mono []float32) error {
 	c.mu.Lock()
 	conn := c.conn
@@ -105,9 +110,8 @@ func (c *Client) SendAudio(mono []float32) error {
 		return nil
 	}
 
-	// Resample 48kHz → 24kHz (drop every other sample).
+	// Resample 48kHz → 24kHz (drop every other sample) and convert to int16.
 	n24 := len(mono) / 2
-	pcm := make([]byte, n24*2)
 	for i := 0; i < n24; i++ {
 		s := mono[i*2]
 		if s > 1.0 {
@@ -115,10 +119,18 @@ func (c *Client) SendAudio(mono []float32) error {
 		} else if s < -1.0 {
 			s = -1.0
 		}
-		binary.LittleEndian.PutUint16(pcm[i*2:], uint16(int16(s*math.MaxInt16)))
+		binary.LittleEndian.PutUint16(c.audioBuf[c.audioPos:], uint16(int16(s*math.MaxInt16)))
+		c.audioPos += 2
 	}
 
-	b64 := base64.StdEncoding.EncodeToString(pcm)
+	// Flush every 10 frames (~100ms = 2400 samples at 24kHz = 4800 bytes).
+	if c.audioPos < audioChunkBytes {
+		return nil
+	}
+
+	b64 := base64.StdEncoding.EncodeToString(c.audioBuf[:c.audioPos])
+	c.audioPos = 0
+
 	msg, _ := json.Marshal(map[string]string{
 		"type":  "input_audio_buffer.append",
 		"audio": b64,
