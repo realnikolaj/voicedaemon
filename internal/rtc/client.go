@@ -14,18 +14,20 @@ import (
 )
 
 const (
-	dataChannelLabel     = "oai-events"
-	vadThreshold         = 0.9
-	vadSilenceDurationMs = 1500
-	dcOpenTimeout        = 10 * time.Second
+	dataChannelLabel        = "oai-events"
+	dcOpenTimeout           = 10 * time.Second
+	defaultVADThreshold     = 0.9
+	defaultVADSilenceDurMs  = 1500
 )
 
 // ClientConfig holds configuration for the WebRTC realtime STT client.
 type ClientConfig struct {
-	SpeachesURL string
-	Model       string
-	Language    string
-	Logf        func(string, ...any)
+	SpeachesURL  string
+	Model        string
+	Language     string
+	VADThreshold float64 // Server-side Silero VAD threshold (0-1, default 0.9)
+	VADSilenceMs int     // Server-side silence duration before cut (ms, default 1500)
+	Logf         func(string, ...any)
 }
 
 // Client manages a single WebRTC session with the Speaches realtime endpoint.
@@ -182,8 +184,11 @@ func (c *Client) Connect(ctx context.Context) error {
 	c.enc = enc
 	c.mu.Unlock()
 
-	c.logf("rtc: connected (model=%s, vad_threshold=%.1f, vad_silence=%dms)",
-		c.cfg.Model, vadThreshold, vadSilenceDurationMs)
+	t := c.cfg.VADThreshold
+	if t <= 0 { t = defaultVADThreshold }
+	s := c.cfg.VADSilenceMs
+	if s <= 0 { s = defaultVADSilenceDurMs }
+	c.logf("rtc: connected (model=%s, vad_threshold=%.2f, vad_silence=%dms)", c.cfg.Model, t, s)
 	return nil
 }
 
@@ -255,6 +260,15 @@ func (c *Client) postSDP(ctx context.Context, sdpOffer string) (string, error) {
 
 // sendSessionUpdate configures transcription-only mode with server-side VAD.
 func (c *Client) sendSessionUpdate(dc *webrtc.DataChannel) error {
+	threshold := c.cfg.VADThreshold
+	if threshold <= 0 {
+		threshold = defaultVADThreshold
+	}
+	silenceMs := c.cfg.VADSilenceMs
+	if silenceMs <= 0 {
+		silenceMs = defaultVADSilenceDurMs
+	}
+
 	msg := map[string]any{
 		"type": "session.update",
 		"session": map[string]any{
@@ -264,8 +278,8 @@ func (c *Client) sendSessionUpdate(dc *webrtc.DataChannel) error {
 			},
 			"turn_detection": map[string]any{
 				"type":                "server_vad",
-				"threshold":           vadThreshold,
-				"silence_duration_ms": vadSilenceDurationMs,
+				"threshold":           threshold,
+				"silence_duration_ms": silenceMs,
 				"create_response":     false,
 			},
 		},

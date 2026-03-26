@@ -25,6 +25,8 @@ type Config struct {
 	SpeachesVoice string
 	PocketVoice   string
 	SilenceGapMS  int
+	VADThreshold  float64
+	VADSilenceMs  int
 	TTSLogPath    string
 	Debug         bool
 	Logf          func(string, ...any)
@@ -332,10 +334,12 @@ func (d *Daemon) onSocketStart() {
 
 	// Open WebRTC realtime session for STT.
 	rtcCfg := rtc.ClientConfig{
-		SpeachesURL: d.cfg.SpeachesURL,
-		Model:       d.cfg.STTModel,
-		Language:    d.cfg.STTLanguage,
-		Logf:        d.logf,
+		SpeachesURL:  d.cfg.SpeachesURL,
+		Model:        d.cfg.STTModel,
+		Language:     d.cfg.STTLanguage,
+		VADThreshold: d.cfg.VADThreshold,
+		VADSilenceMs: d.cfg.VADSilenceMs,
+		Logf:         d.logf,
 	}
 	client := rtc.NewClient(rtcCfg)
 
