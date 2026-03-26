@@ -65,14 +65,30 @@ func NewClient(cfg ClientConfig) *Client {
 // Connect establishes the WebRTC session. It blocks until the data channel
 // is open and the session.update has been sent, or until ctx is cancelled.
 func (c *Client) Connect(ctx context.Context) error {
-	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	// Register only Opus with empty parameters to match aiortc's SDP answer.
+	// aiortc strips fmtp parameters; pion's default Opus registration includes
+	// "minptime=10;useinbandfec=1" which causes a payload type mismatch.
+	me := &webrtc.MediaEngine{}
+	if err := me.RegisterCodec(webrtc.RTPCodecParameters{
+		RTPCodecCapability: webrtc.RTPCodecCapability{
+			MimeType:  webrtc.MimeTypeOpus,
+			ClockRate: 48000,
+			Channels:  2,
+		},
+		PayloadType: 111,
+	}, webrtc.RTPCodecTypeAudio); err != nil {
+		return fmt.Errorf("rtc: register opus codec: %w", err)
+	}
+
+	api := webrtc.NewAPI(webrtc.WithMediaEngine(me))
+	pc, err := api.NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
 		return fmt.Errorf("rtc: peer connection: %w", err)
 	}
 
 	// Opus audio track — 48kHz stereo, required by aiortc on the server.
 	audioTrack, err := webrtc.NewTrackLocalStaticSample(
-		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus},
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2},
 		"audio", "voicedaemon-mic",
 	)
 	if err != nil {
