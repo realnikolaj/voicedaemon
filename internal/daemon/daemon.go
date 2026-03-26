@@ -290,10 +290,17 @@ func (d *Daemon) onQueueIdle() {
 }
 
 // onUtterance is called by the audio pipeline when VAD detects a complete utterance.
-// Transcription runs in a goroutine so the capture loop and VAD are never blocked
-// waiting for the HTTP round-trip to Speaches. Multiple utterances can transcribe
-// concurrently, taking advantage of Speaches' multi-worker support.
+// Skipped when WebRTC realtime is active (server handles VAD and transcription).
+// Falls back to batch HTTP POST when no WebRTC session exists.
 func (d *Daemon) onUtterance(samples []float32) {
+	d.mu.Lock()
+	hasRTC := d.rtcClient != nil
+	d.mu.Unlock()
+
+	if hasRTC {
+		return // WebRTC session handles transcription server-side
+	}
+
 	go func() {
 		text, err := d.sttClient.Transcribe(context.Background(), samples)
 		if err != nil {
