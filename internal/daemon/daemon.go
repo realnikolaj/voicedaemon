@@ -341,10 +341,8 @@ func (d *Daemon) onSocketStart() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	if err := client.Connect(ctx); err != nil {
-		d.logf("daemon: WebRTC connect failed, falling back to batch STT: %v", err)
+		d.logf("daemon: WebRTC connect failed: %v", err)
 		cancel()
-		// Fallback: use the batch HTTP pipeline as before.
-		d.pipeline.StartListening()
 		return
 	}
 
