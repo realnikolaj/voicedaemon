@@ -16,19 +16,21 @@ var version = "0.2.8"
 
 // CLI defines the Kong CLI flags for voicedaemon.
 type CLI struct {
-	Version       kong.VersionFlag `name:"version" help:"Print version."`
-	Port          int              `help:"HTTP server port." default:"5111" env:"DAEMON_PORT"`
-	SocketPath    string           `help:"Unix socket path for STT." default:"/tmp/voice-daemon.sock" env:"STT_SOCKET_PATH"`
-	SpeachesURL   string           `help:"Speaches server URL." default:"http://localhost:34331" env:"SPEACHES_URL"`
-	PocketTTSURL  string           `name:"pocket-tts-url" help:"PocketTTS server URL." default:"http://localhost:49112" env:"POCKET_TTS_URL"`
-	STTModel      string           `help:"STT model name." default:"deepdml/faster-whisper-large-v3-turbo-ct2" env:"STT_MODEL"`
-	STTLanguage   string           `help:"STT language code." default:"en" env:"STT_LANGUAGE"`
-	SpeachesModel string           `help:"Speaches TTS model." default:"speaches-ai/Kokoro-82M-v1.0-ONNX" env:"SPEACHES_MODEL"`
-	SpeachesVoice string           `help:"Speaches TTS voice." default:"af_heart" env:"SPEACHES_VOICE"`
-	PocketVoice   string           `help:"PocketTTS voice." default:"alba" env:"POCKET_TTS_VOICE"`
-	SilenceGapMS  int              `name:"silence-gap" help:"VAD silence gap in milliseconds before utterance ends." default:"1100" env:"VOICEDAEMON_SILENCE_GAP"`
-	TTSLog        string           `name:"tts-log" help:"Path to TTS JSONL log file (empty=disabled)." default:"" env:"VOICEDAEMON_TTS_LOG"`
-	Debug         bool             `help:"Enable debug logging." default:"false" env:"VOICEDAEMON_DEBUG"`
+	Version      kong.VersionFlag `name:"version" help:"Print version."`
+	Port         int              `help:"HTTP server port." default:"5111" env:"DAEMON_PORT" hidden:""`
+	SocketPath   string           `help:"Unix socket path." default:"/tmp/voice-daemon.sock" env:"STT_SOCKET_PATH" hidden:""`
+	SpeachesURL  string           `help:"Speaches server URL (STT + TTS)." default:"http://localhost:34331" env:"SPEACHES_URL"`
+	PocketTTSURL string           `name:"pocket-tts-url" help:"PocketTTS server URL." default:"http://localhost:49112" env:"POCKET_TTS_URL"`
+	STTModel     string           `help:"Whisper model for transcription." default:"deepdml/faster-whisper-large-v3-turbo-ct2" env:"STT_MODEL"`
+	STTLanguage  string           `help:"STT language code." default:"en" env:"STT_LANGUAGE" hidden:""`
+	SilenceGapMS int              `name:"silence-gap" help:"Local VAD silence gap in ms (batch fallback only)." default:"1100" env:"VOICEDAEMON_SILENCE_GAP" hidden:""`
+	TTSLog       string           `name:"tts-log" help:"TTS JSONL log path." default:"" env:"VOICEDAEMON_TTS_LOG"`
+	Debug        bool             `help:"Enable debug logging." default:"false" env:"VOICEDAEMON_DEBUG"`
+
+	// TTS configuration — used by the /speak HTTP endpoint and MCP voice tools.
+	SpeachesModel string `help:"Speaches TTS model." default:"speaches-ai/Kokoro-82M-v1.0-ONNX" env:"SPEACHES_MODEL" hidden:""`
+	SpeachesVoice string `help:"Speaches TTS voice." default:"af_heart" env:"SPEACHES_VOICE" hidden:""`
+	PocketVoice   string `help:"PocketTTS voice." default:"alba" env:"POCKET_TTS_VOICE" hidden:""`
 }
 
 func main() {
