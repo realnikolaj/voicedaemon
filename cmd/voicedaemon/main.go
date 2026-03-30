@@ -24,7 +24,7 @@ type CLI struct {
 	STTModel       string  `help:"Whisper model for transcription." default:"deepdml/faster-whisper-large-v3-turbo-ct2" env:"STT_MODEL"`
 	STTLanguage    string  `help:"STT language code." default:"en" env:"STT_LANGUAGE" hidden:""`
 	VADThreshold   float64 `name:"vad-threshold" help:"Server-side Silero VAD speech probability (0-1)." default:"0.9" env:"VOICEDAEMON_VAD_THRESHOLD"`
-	VADSilenceMs   int     `name:"vad-silence" help:"Server-side silence duration before utterance cut (ms)." default:"1500" env:"VOICEDAEMON_VAD_SILENCE"`
+	VADSilenceMs   int     `name:"vad-silence" help:"Server-side silence duration before utterance cut (ms)." default:"550" env:"VOICEDAEMON_VAD_SILENCE"`
 	SilenceGapMS   int     `name:"silence-gap" help:"Local VAD silence gap in ms (batch fallback only)." default:"1100" env:"VOICEDAEMON_SILENCE_GAP" hidden:""`
 	TTSLog         string  `name:"tts-log" help:"TTS JSONL log path." default:"" env:"VOICEDAEMON_TTS_LOG"`
 	Debug          bool    `help:"Enable debug logging." default:"false" env:"VOICEDAEMON_DEBUG"`

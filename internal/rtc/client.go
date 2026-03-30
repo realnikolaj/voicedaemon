@@ -17,7 +17,7 @@ import (
 
 const (
 	defaultVADThreshold    = 0.9
-	defaultVADSilenceDurMs = 1500
+	defaultVADSilenceDurMs = 550 // matches Speaches server default
 	wsSampleRate           = 24000 // OpenAI realtime API expects 24kHz
 	audioChunkFrames       = 10    // accumulate 10 portaudio frames before sending
 	audioChunkBytes        = 240 * 2 * audioChunkFrames // 240 samples/frame at 24kHz × 2 bytes × 10 frames = 4800
@@ -110,10 +110,12 @@ func (c *Client) SendAudio(mono []float32) error {
 		return nil
 	}
 
-	// Resample 48kHz → 24kHz (drop every other sample) and convert to int16.
+	// Resample 48kHz → 24kHz by averaging adjacent sample pairs.
+	// This is a 2-tap low-pass filter before decimation — prevents aliasing
+	// artifacts that occur when simply dropping every other sample.
 	n24 := len(mono) / 2
 	for i := 0; i < n24; i++ {
-		s := mono[i*2]
+		s := (mono[i*2] + mono[i*2+1]) * 0.5
 		if s > 1.0 {
 			s = 1.0
 		} else if s < -1.0 {
