@@ -7,8 +7,11 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/alecthomas/kong"
+	"github.com/gordonklaus/portaudio"
+	"github.com/realnikolaj/voicedaemon/internal/audio"
 	"github.com/realnikolaj/voicedaemon/internal/daemon"
 )
 
@@ -25,6 +28,9 @@ type CLI struct {
 	STTLanguage    string  `help:"STT language code." default:"en" env:"STT_LANGUAGE" hidden:""`
 	VADThreshold   float64 `name:"vad-threshold" help:"Server-side Silero VAD speech probability (0-1)." default:"0.9" env:"VOICEDAEMON_VAD_THRESHOLD"`
 	VADSilenceMs   int     `name:"vad-silence" help:"Server-side silence duration before utterance cut (ms)." default:"550" env:"VOICEDAEMON_VAD_SILENCE"`
+	NoiseProfile   string  `name:"noise-profile" help:"Load a calibrated noise profile for noise reduction." default:"" env:"VOICEDAEMON_NOISE_PROFILE"`
+	Calibrate      string  `name:"calibrate" help:"Record silence and save a noise profile with this name, then exit." default:""`
+	CalibrateDur   int     `name:"calibrate-duration" help:"Calibration recording duration in seconds." default:"3" hidden:""`
 	SilenceGapMS   int     `name:"silence-gap" help:"Local VAD silence gap in ms (batch fallback only)." default:"1100" env:"VOICEDAEMON_SILENCE_GAP" hidden:""`
 	TTSLog         string  `name:"tts-log" help:"TTS JSONL log path." default:"" env:"VOICEDAEMON_TTS_LOG"`
 	Debug          bool    `help:"Enable debug logging." default:"false" env:"VOICEDAEMON_DEBUG"`
@@ -45,6 +51,32 @@ func main() {
 
 	logf := makeLogf(cli.Debug)
 
+	// Handle --calibrate: record silence, save profile, exit.
+	if cli.Calibrate != "" {
+		if err := runCalibration(cli.Calibrate, cli.CalibrateDur, logf); err != nil {
+			logf("fatal: %v", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	// Handle --noise-profile list
+	if cli.NoiseProfile == "list" {
+		profiles, err := audio.ListNoiseProfiles()
+		if err != nil {
+			logf("fatal: %v", err)
+			os.Exit(1)
+		}
+		if len(profiles) == 0 {
+			fmt.Println("no noise profiles found — use --calibrate <name> to create one")
+		} else {
+			for _, p := range profiles {
+				fmt.Println(p)
+			}
+		}
+		os.Exit(0)
+	}
+
 	cfg := daemon.Config{
 		Port:          cli.Port,
 		SocketPath:    cli.SocketPath,
@@ -58,6 +90,7 @@ func main() {
 		SilenceGapMS:  cli.SilenceGapMS,
 		VADThreshold:  cli.VADThreshold,
 		VADSilenceMs:  cli.VADSilenceMs,
+		NoiseProfile:  cli.NoiseProfile,
 		TTSLogPath:    cli.TTSLog,
 		Debug:         cli.Debug,
 		Logf:          logf,
@@ -78,6 +111,54 @@ func main() {
 		logf("fatal: %v", err)
 		os.Exit(1)
 	}
+}
+
+func runCalibration(name string, durationSec int, logf func(string, ...any)) error {
+	if err := portaudio.Initialize(); err != nil {
+		return fmt.Errorf("portaudio init: %w", err)
+	}
+	defer portaudio.Terminate()
+
+	frameSize := audio.FrameSize // 480 samples at 48kHz
+	buf := make([]float32, frameSize)
+	stream, err := portaudio.OpenDefaultStream(1, 0, float64(audio.SampleRate), frameSize, buf)
+	if err != nil {
+		return fmt.Errorf("open mic: %w", err)
+	}
+	defer stream.Close()
+
+	if err := stream.Start(); err != nil {
+		return fmt.Errorf("start mic: %w", err)
+	}
+
+	fmt.Printf("Calibrating noise profile %q — stay silent for %d seconds...\n", name, durationSec)
+
+	dur := time.Duration(durationSec) * time.Second
+	deadline := time.Now().Add(dur)
+	var frames [][]float32
+
+	for time.Now().Before(deadline) {
+		if err := stream.Read(); err != nil {
+			return fmt.Errorf("read mic: %w", err)
+		}
+		frame := make([]float32, len(buf))
+		copy(frame, buf)
+		frames = append(frames, frame)
+	}
+
+	stream.Stop()
+
+	profile, err := audio.CalibrateNoiseProfile(name, frames, audio.SampleRate)
+	if err != nil {
+		return fmt.Errorf("calibrate: %w", err)
+	}
+
+	if err := profile.Save(); err != nil {
+		return fmt.Errorf("save profile: %w", err)
+	}
+
+	fmt.Printf("Saved noise profile %q (%d frames, %ds)\n", name, len(frames), durationSec)
+	return nil
 }
 
 func makeLogf(debug bool) func(string, ...any) {

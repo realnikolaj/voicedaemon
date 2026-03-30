@@ -13,14 +13,15 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/realnikolaj/voicedaemon/internal/audio"
 )
 
 const (
 	defaultVADThreshold    = 0.9
 	defaultVADSilenceDurMs = 550 // matches Speaches server default
-	wsSampleRate           = 24000 // OpenAI realtime API expects 24kHz
-	audioChunkFrames       = 10    // accumulate 10 portaudio frames before sending
-	audioChunkBytes        = 240 * 2 * audioChunkFrames // 240 samples/frame at 24kHz × 2 bytes × 10 frames = 4800
+	wsSampleRate           = 16000 // send 16kHz directly (requires patched Speaches)
+	audioChunkFrames       = 10   // accumulate 10 portaudio frames before sending
+	audioChunkBytes        = 160 * 2 * audioChunkFrames // 160 samples/frame at 16kHz × 2 bytes × 10 frames = 3200
 )
 
 // ClientConfig holds configuration for the WebSocket realtime STT client.
@@ -30,6 +31,7 @@ type ClientConfig struct {
 	Language     string
 	VADThreshold float64
 	VADSilenceMs int
+	NoiseProfile string // name of noise profile to load (empty = no noise reduction)
 	Logf         func(string, ...any)
 }
 
@@ -43,7 +45,11 @@ type Client struct {
 	conn    *websocket.Conn
 	writeMu sync.Mutex // serialise WebSocket writes
 
-	audioBuf [audioChunkBytes]byte // accumulation buffer for 24kHz PCM
+	decimator *audio.FIRDecimator  // 48kHz → 16kHz anti-aliased
+	hpf       *audio.HighPassFilter // 80Hz high-pass (rumble removal)
+	reducer   *audio.NoiseReducer   // spectral subtraction (optional)
+
+	audioBuf [audioChunkBytes]byte // accumulation buffer for 16kHz PCM
 	audioPos int                    // write position in audioBuf
 
 	transcripts chan string
@@ -68,6 +74,20 @@ func NewClient(cfg ClientConfig) *Client {
 // Connect establishes the WebSocket session. Blocks until connected and
 // session.update is sent, or until ctx is cancelled.
 func (c *Client) Connect(ctx context.Context) error {
+	// Initialise audio processing chain.
+	c.decimator = audio.NewFIRDecimator(3, 33, 1.0/3.0) // 48kHz → 16kHz
+	c.hpf = audio.NewHighPassFilter(80, 48000)           // remove rumble before decimation
+
+	if c.cfg.NoiseProfile != "" {
+		profile, err := audio.LoadNoiseProfile(c.cfg.NoiseProfile)
+		if err != nil {
+			c.logf("rtc: noise profile %q not found, skipping: %v", c.cfg.NoiseProfile, err)
+		} else {
+			c.reducer = audio.NewNoiseReducer(profile)
+			c.logf("rtc: loaded noise profile %q", c.cfg.NoiseProfile)
+		}
+	}
+
 	wsURL := strings.Replace(c.cfg.SpeachesURL, "https://", "wss://", 1)
 	wsURL = strings.Replace(wsURL, "http://", "ws://", 1)
 	wsURL += "/v1/realtime?model=" + c.cfg.Model + "&intent=transcription"
@@ -100,8 +120,7 @@ func (c *Client) Connect(ctx context.Context) error {
 }
 
 // SendAudio accepts a mono 480-sample (10ms at 48kHz) float32 frame.
-// Frames are accumulated into ~100ms chunks before sending to reduce
-// WebSocket message rate from 100/s to 10/s.
+// Processing chain: high-pass → noise reduction → FIR decimate 48k→16k → buffer → send.
 func (c *Client) SendAudio(mono []float32) error {
 	c.mu.Lock()
 	conn := c.conn
@@ -110,12 +129,21 @@ func (c *Client) SendAudio(mono []float32) error {
 		return nil
 	}
 
-	// Resample 48kHz → 24kHz by averaging adjacent sample pairs.
-	// This is a 2-tap low-pass filter before decimation — prevents aliasing
-	// artifacts that occur when simply dropping every other sample.
-	n24 := len(mono) / 2
-	for i := 0; i < n24; i++ {
-		s := (mono[i*2] + mono[i*2+1]) * 0.5
+	// 1. High-pass filter (80Hz) — remove rumble, AC hum.
+	frame := make([]float32, len(mono))
+	copy(frame, mono)
+	c.hpf.Process(frame)
+
+	// 2. Noise reduction (if profile loaded).
+	if c.reducer != nil {
+		frame = c.reducer.Process(frame)
+	}
+
+	// 3. FIR decimate 48kHz → 16kHz with anti-alias filter.
+	decimated := c.decimator.Process(frame) // 480 → 160 samples
+
+	// 4. Convert to int16 PCM and accumulate.
+	for _, s := range decimated {
 		if s > 1.0 {
 			s = 1.0
 		} else if s < -1.0 {
@@ -125,7 +153,7 @@ func (c *Client) SendAudio(mono []float32) error {
 		c.audioPos += 2
 	}
 
-	// Flush every 10 frames (~100ms = 2400 samples at 24kHz = 4800 bytes).
+	// 5. Flush every 10 frames (~100ms = 1600 samples at 16kHz = 3200 bytes).
 	if c.audioPos < audioChunkBytes {
 		return nil
 	}

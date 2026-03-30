@@ -27,6 +27,7 @@ type Config struct {
 	SilenceGapMS  int
 	VADThreshold  float64
 	VADSilenceMs  int
+	NoiseProfile  string
 	TTSLogPath    string
 	Debug         bool
 	Logf          func(string, ...any)
@@ -339,6 +340,7 @@ func (d *Daemon) onSocketStart() {
 		Language:     d.cfg.STTLanguage,
 		VADThreshold: d.cfg.VADThreshold,
 		VADSilenceMs: d.cfg.VADSilenceMs,
+		NoiseProfile: d.cfg.NoiseProfile,
 		Logf:         d.logf,
 	}
 	client := rtc.NewClient(rtcCfg)
