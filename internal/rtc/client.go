@@ -235,7 +235,13 @@ func (c *Client) sendSessionUpdate() error {
 }
 
 // readLoop reads WebSocket messages and extracts transcripts.
+// Deduplicates repeated events from the server (known Speaches bug where
+// VAD fires speech_stopped on every chunk during silence).
 func (c *Client) readLoop() {
+	var lastEventType string
+	var lastTranscript string
+	var dupeCount int
+
 	for {
 		_, message, err := c.conn.ReadMessage()
 		if err != nil {
@@ -248,31 +254,45 @@ func (c *Client) readLoop() {
 			return
 		}
 
-		// Log event type for debugging.
 		var ev struct{ Type string `json:"type"` }
-		if json.Unmarshal(message, &ev) == nil && ev.Type != "" {
-			switch ev.Type {
-			case "input_audio_buffer.speech_started":
-				c.logf("rtc: speech started")
-			case "input_audio_buffer.speech_stopped":
-				c.logf("rtc: speech stopped")
-			case "input_audio_buffer.committed":
-				c.logf("rtc: buffer committed")
-			case "conversation.item.input_audio_transcription.completed":
-				// handled below
-			case "session.created", "session.updated":
-				c.logf("rtc: %s", ev.Type)
-			case "error":
-				c.logf("rtc: server error: %s", string(message))
-			default:
-				c.logf("rtc: event: %s", ev.Type)
-			}
+		if json.Unmarshal(message, &ev) != nil || ev.Type == "" {
+			continue
+		}
+
+		// Deduplicate consecutive identical event types.
+		if ev.Type == lastEventType && ev.Type != "conversation.item.input_audio_transcription.completed" {
+			dupeCount++
+			continue
+		}
+		if dupeCount > 0 {
+			c.logf("rtc: (suppressed %d duplicate %s events)", dupeCount, lastEventType)
+			dupeCount = 0
+		}
+		lastEventType = ev.Type
+
+		switch ev.Type {
+		case "input_audio_buffer.speech_started":
+			c.logf("rtc: speech started")
+			lastTranscript = "" // reset dedup on new speech
+		case "input_audio_buffer.speech_stopped":
+			c.logf("rtc: speech stopped")
+		case "input_audio_buffer.committed":
+			c.logf("rtc: buffer committed")
+		case "session.created", "session.updated":
+			c.logf("rtc: %s", ev.Type)
+		case "error":
+			c.logf("rtc: server error: %s", string(message))
+		case "conversation.item.input_audio_transcription.completed":
+			// handled below
+		default:
+			c.logf("rtc: event: %s", ev.Type)
 		}
 
 		text := extractTranscript(message)
-		if text == "" {
+		if text == "" || text == lastTranscript {
 			continue
 		}
+		lastTranscript = text
 		c.logf("rtc: transcript: %q", text)
 		select {
 		case c.transcripts <- text:
