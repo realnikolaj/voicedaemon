@@ -49,8 +49,9 @@ type Client struct {
 	hpf       *audio.HighPassFilter // 80Hz high-pass (rumble removal)
 	reducer   *audio.NoiseReducer   // spectral subtraction (optional)
 
-	audioBuf [audioChunkBytes]byte // accumulation buffer for 16kHz PCM
-	audioPos int                    // write position in audioBuf
+	audioBuf    [audioChunkBytes]byte // accumulation buffer for 24kHz PCM
+	audioPos    int                   // write position in audioBuf
+	audioFrames int                   // frames since last flush (0 = send immediately)
 
 	transcripts chan string
 
@@ -120,7 +121,9 @@ func (c *Client) Connect(ctx context.Context) error {
 }
 
 // SendAudio accepts a mono 480-sample (10ms at 48kHz) float32 frame.
-// Processing chain: high-pass → noise reduction → FIR decimate 48k→16k → buffer → send.
+// Processing chain: high-pass → FIR decimate 48k→24k → buffer → send.
+// The first chunk is sent immediately (no buffering) to avoid losing
+// the beginning of speech. Subsequent chunks buffer to ~100ms.
 func (c *Client) SendAudio(mono []float32) error {
 	c.mu.Lock()
 	conn := c.conn
@@ -129,20 +132,13 @@ func (c *Client) SendAudio(mono []float32) error {
 		return nil
 	}
 
-	// 1. High-pass filter (80Hz) — remove rumble, AC hum.
-	frame := make([]float32, len(mono))
-	copy(frame, mono)
-	c.hpf.Process(frame)
+	// 1. High-pass filter (80Hz) — operates in-place, no allocation.
+	c.hpf.Process(mono)
 
-	// 2. Noise reduction (if profile loaded).
-	if c.reducer != nil {
-		frame = c.reducer.Process(frame)
-	}
+	// 2. FIR decimate 48kHz → 24kHz with anti-alias filter.
+	decimated := c.decimator.Process(mono) // 480 → 240 samples
 
-	// 3. FIR decimate 48kHz → 16kHz with anti-alias filter.
-	decimated := c.decimator.Process(frame) // 480 → 160 samples
-
-	// 4. Convert to int16 PCM and accumulate.
+	// 3. Convert to int16 PCM and accumulate.
 	for _, s := range decimated {
 		if s > 1.0 {
 			s = 1.0
@@ -153,13 +149,25 @@ func (c *Client) SendAudio(mono []float32) error {
 		c.audioPos += 2
 	}
 
-	// 5. Flush every 10 frames (~100ms = 1600 samples at 16kHz = 3200 bytes).
-	if c.audioPos < audioChunkBytes {
+	c.audioFrames++
+
+	// 4. Send: first chunk immediately (avoid losing speech onset),
+	//    then every 10 frames (~100ms).
+	if c.audioFrames > 1 && c.audioPos < audioChunkBytes {
+		return nil
+	}
+
+	return c.flushAudio(conn)
+}
+
+func (c *Client) flushAudio(conn *websocket.Conn) error {
+	if c.audioPos == 0 {
 		return nil
 	}
 
 	b64 := base64.StdEncoding.EncodeToString(c.audioBuf[:c.audioPos])
 	c.audioPos = 0
+	c.audioFrames = 0
 
 	msg, _ := json.Marshal(map[string]string{
 		"type":  "input_audio_buffer.append",
