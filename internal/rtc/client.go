@@ -19,9 +19,9 @@ import (
 const (
 	defaultVADThreshold    = 0.9
 	defaultVADSilenceDurMs = 550 // matches Speaches server default
-	wsSampleRate           = 16000 // send 16kHz directly (requires patched Speaches)
+	wsSampleRate           = 24000 // OpenAI realtime API spec expects 24kHz
 	audioChunkFrames       = 10   // accumulate 10 portaudio frames before sending
-	audioChunkBytes        = 160 * 2 * audioChunkFrames // 160 samples/frame at 16kHz × 2 bytes × 10 frames = 3200
+	audioChunkBytes        = 240 * 2 * audioChunkFrames // 240 samples/frame at 24kHz × 2 bytes × 10 frames = 4800
 )
 
 // ClientConfig holds configuration for the WebSocket realtime STT client.
@@ -75,7 +75,7 @@ func NewClient(cfg ClientConfig) *Client {
 // session.update is sent, or until ctx is cancelled.
 func (c *Client) Connect(ctx context.Context) error {
 	// Initialise audio processing chain.
-	c.decimator = audio.NewFIRDecimator(3, 33, 1.0/3.0) // 48kHz → 16kHz
+	c.decimator = audio.NewFIRDecimator(2, 33, 0.5) // 48kHz → 24kHz
 	c.hpf = audio.NewHighPassFilter(80, 48000)           // remove rumble before decimation
 
 	if c.cfg.NoiseProfile != "" {
