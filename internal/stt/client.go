@@ -37,9 +37,11 @@ func DefaultClientConfig() ClientConfig {
 
 // Client is a Speaches STT HTTP client.
 type Client struct {
-	cfg    ClientConfig
-	logf   func(string, ...any)
-	client *http.Client
+	cfg       ClientConfig
+	logf      func(string, ...any)
+	client    *http.Client
+	hpf       *audio.HighPassFilter  // lazy-init on first Transcribe
+	decimator *audio.FIRDecimator    // lazy-init on first Transcribe
 }
 
 // NewClient creates a new STT client.
@@ -64,13 +66,24 @@ type transcriptionResponse struct {
 }
 
 // Transcribe sends audio to the STT service and returns the transcript.
-// Input audio is float32 at 48kHz; it gets resampled to 16kHz and WAV-encoded.
+// Input audio is float32 at 48kHz; it gets FIR-decimated to 16kHz and WAV-encoded.
 func (c *Client) Transcribe(ctx context.Context, samples []float32) (string, error) {
-	// Normalize audio (peak normalize)
-	normalized := peakNormalize(samples)
+	// High-pass filter at 80Hz — remove rumble, AC hum.
+	if c.hpf == nil {
+		c.hpf = audio.NewHighPassFilter(80, audio.SampleRate)
+	}
+	filtered := make([]float32, len(samples))
+	copy(filtered, samples)
+	c.hpf.Process(filtered)
 
-	// Resample from 48kHz to 16kHz for Whisper
-	resampled := audio.Resample(normalized, audio.SampleRate, audio.STTSampleRate)
+	// Normalize audio (peak normalize)
+	normalized := peakNormalize(filtered)
+
+	// FIR anti-aliased decimate from 48kHz to 16kHz for Whisper.
+	if c.decimator == nil {
+		c.decimator = audio.NewFIRDecimator(3, 33, 1.0/3.0)
+	}
+	resampled := c.decimator.Process(normalized)
 
 	// Encode as WAV
 	wavData, err := encodeWAV(resampled, audio.STTSampleRate)

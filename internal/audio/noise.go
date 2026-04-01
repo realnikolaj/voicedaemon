@@ -39,22 +39,29 @@ func CalibrateNoiseProfile(name string, frames [][]float32, sampleRate int) (*No
 	avgMag := make([]float64, numBins)
 	count := 0
 
-	buf := make([]float64, noiseFFTSize)
-
-	for _, frame := range frames {
-		// Process in FFT-sized windows.
-		for offset := 0; offset+noiseFFTSize <= len(frame); offset += noiseFFTSize {
-			for i := 0; i < noiseFFTSize; i++ {
-				buf[i] = float64(frame[offset+i])
-			}
-
-			coeffs := fft.Coefficients(nil, buf)
-
-			for i := 0; i < numBins; i++ {
-				avgMag[i] += cmplx.Abs(coeffs[i])
-			}
-			count++
+	// Concatenate all frames into one contiguous buffer (frames are 480 samples
+	// each, but FFT needs 512-sample windows).
+	totalSamples := 0
+	for _, f := range frames {
+		totalSamples += len(f)
+	}
+	allSamples := make([]float64, 0, totalSamples)
+	for _, f := range frames {
+		for _, s := range f {
+			allSamples = append(allSamples, float64(s))
 		}
+	}
+
+	buf := make([]float64, noiseFFTSize)
+	for offset := 0; offset+noiseFFTSize <= len(allSamples); offset += noiseFFTSize {
+		copy(buf, allSamples[offset:offset+noiseFFTSize])
+
+		coeffs := fft.Coefficients(nil, buf)
+
+		for i := 0; i < numBins; i++ {
+			avgMag[i] += cmplx.Abs(coeffs[i])
+		}
+		count++
 	}
 
 	if count == 0 {

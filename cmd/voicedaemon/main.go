@@ -24,14 +24,11 @@ type CLI struct {
 	SocketPath   string           `help:"Unix socket path." default:"/tmp/voice-daemon.sock" env:"STT_SOCKET_PATH" hidden:""`
 	SpeachesURL  string           `help:"Speaches server URL (STT + TTS)." default:"http://localhost:34331" env:"SPEACHES_URL"`
 	PocketTTSURL string           `name:"pocket-tts-url" help:"PocketTTS server URL." default:"http://localhost:49112" env:"POCKET_TTS_URL"`
-	STTModel       string  `help:"Whisper model for transcription." default:"deepdml/faster-whisper-large-v3-turbo-ct2" env:"STT_MODEL"`
-	STTLanguage    string  `help:"STT language code." default:"en" env:"STT_LANGUAGE" hidden:""`
-	VADThreshold   float64 `name:"vad-threshold" help:"Server-side Silero VAD speech probability (0-1)." default:"0.9" env:"VOICEDAEMON_VAD_THRESHOLD"`
-	VADSilenceMs   int     `name:"vad-silence" help:"Server-side silence duration before utterance cut (ms)." default:"550" env:"VOICEDAEMON_VAD_SILENCE"`
-	NoiseProfile   string  `name:"noise-profile" help:"Load a calibrated noise profile for noise reduction." default:"" env:"VOICEDAEMON_NOISE_PROFILE"`
-	Calibrate      string  `name:"calibrate" help:"Record silence and save a noise profile with this name, then exit." default:""`
-	CalibrateDur   int     `name:"calibrate-duration" help:"Calibration recording duration in seconds." default:"3" hidden:""`
-	SilenceGapMS   int     `name:"silence-gap" help:"Local VAD silence gap in ms (batch fallback only)." default:"1100" env:"VOICEDAEMON_SILENCE_GAP" hidden:""`
+	STTModel     string `help:"Whisper model for transcription." default:"deepdml/faster-whisper-large-v3-turbo-ct2" env:"STT_MODEL"`
+	STTLanguage  string `help:"STT language code." default:"en" env:"STT_LANGUAGE" hidden:""`
+	Calibrate    string `name:"calibrate" help:"Record silence and save a noise profile with this name, then exit." default:""`
+	CalibrateDur int    `name:"calibrate-duration" help:"Calibration recording duration in seconds." default:"3" hidden:""`
+	SilenceGapMS int    `name:"silence-gap" help:"Local VAD silence gap in ms before utterance ends." default:"1100" env:"VOICEDAEMON_SILENCE_GAP"`
 	TTSLog         string  `name:"tts-log" help:"TTS JSONL log path." default:"" env:"VOICEDAEMON_TTS_LOG"`
 	Debug          bool    `help:"Enable debug logging." default:"false" env:"VOICEDAEMON_DEBUG"`
 
@@ -60,8 +57,8 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Handle --noise-profile list
-	if cli.NoiseProfile == "list" {
+	// Handle --calibrate list
+	if cli.Calibrate == "list" {
 		profiles, err := audio.ListNoiseProfiles()
 		if err != nil {
 			logf("fatal: %v", err)
@@ -88,9 +85,6 @@ func main() {
 		SpeachesVoice: cli.SpeachesVoice,
 		PocketVoice:   cli.PocketVoice,
 		SilenceGapMS:  cli.SilenceGapMS,
-		VADThreshold:  cli.VADThreshold,
-		VADSilenceMs:  cli.VADSilenceMs,
-		NoiseProfile:  cli.NoiseProfile,
 		TTSLogPath:    cli.TTSLog,
 		Debug:         cli.Debug,
 		Logf:          logf,
