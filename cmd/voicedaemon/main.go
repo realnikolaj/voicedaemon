@@ -15,7 +15,7 @@ import (
 	"github.com/realnikolaj/voicedaemon/internal/daemon"
 )
 
-var version = "0.2.8"
+var version = "0.3.0"
 
 // CLI defines the Kong CLI flags for voicedaemon.
 type CLI struct {
