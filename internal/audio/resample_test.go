@@ -96,6 +96,80 @@ func TestResamplePreservesTone(t *testing.T) {
 	}
 }
 
+func TestFIRDecimator48kTo16k(t *testing.T) {
+	dec := NewFIRDecimator(3, 33, 1.0/3.0)
+
+	// 480 samples at 48kHz → 160 samples at 16kHz
+	in := make([]float32, 480)
+	for i := range in {
+		in[i] = float32(math.Sin(2 * math.Pi * 1000 * float64(i) / 48000))
+	}
+
+	out := dec.Process(in)
+	if len(out) != 160 {
+		t.Fatalf("expected 160 samples, got %d", len(out))
+	}
+
+	var maxAbs float32
+	for _, s := range out {
+		if s > maxAbs {
+			maxAbs = s
+		}
+		if -s > maxAbs {
+			maxAbs = -s
+		}
+	}
+	if maxAbs < 0.3 {
+		t.Errorf("1kHz signal too quiet: max=%.4f, expected >0.3", maxAbs)
+	}
+}
+
+func TestFIRDecimatorAttenuatesAlias(t *testing.T) {
+	dec := NewFIRDecimator(3, 33, 1.0/3.0)
+
+	// 20kHz sine wave — above 8kHz cutoff, should be attenuated
+	in := make([]float32, 480)
+	for i := range in {
+		in[i] = float32(math.Sin(2 * math.Pi * 20000 * float64(i) / 48000))
+	}
+
+	out := dec.Process(in)
+
+	var maxAbs float32
+	for _, s := range out {
+		if s > maxAbs {
+			maxAbs = s
+		}
+		if -s > maxAbs {
+			maxAbs = -s
+		}
+	}
+	if maxAbs > 0.15 {
+		t.Errorf("20kHz not attenuated: max=%.4f", maxAbs)
+	}
+}
+
+func TestFIRDecimatorContinuity(t *testing.T) {
+	dec := NewFIRDecimator(3, 33, 1.0/3.0)
+
+	frame1 := make([]float32, 480)
+	frame2 := make([]float32, 480)
+	for i := range frame1 {
+		frame1[i] = float32(math.Sin(2 * math.Pi * 500 * float64(i) / 48000))
+	}
+	for i := range frame2 {
+		frame2[i] = float32(math.Sin(2 * math.Pi * 500 * float64(i+480) / 48000))
+	}
+
+	out1 := dec.Process(frame1)
+	out2 := dec.Process(frame2)
+
+	diff := math.Abs(float64(out2[0] - out1[len(out1)-1]))
+	if diff > 0.25 {
+		t.Errorf("frame boundary discontinuity: %.4f", diff)
+	}
+}
+
 func TestResampleS16LE(t *testing.T) {
 	tests := []struct {
 		name    string
