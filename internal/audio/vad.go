@@ -31,8 +31,9 @@ func (s VadState) String() string {
 }
 
 const (
-	// DefaultPreBufferFrames is ~320ms of pre-buffer (32 frames × 10ms at 48kHz).
-	DefaultPreBufferFrames = 32
+	// DefaultPreBufferFrames is ~500ms of pre-buffer (50 frames × 10ms at 48kHz).
+	// Captures audio before voice onset to avoid losing first syllables.
+	DefaultPreBufferFrames = 50
 
 	// DefaultSilenceGapFrames is ~1100ms silence gap (110 consecutive non-voice frames × 10ms).
 	DefaultSilenceGapFrames = 110

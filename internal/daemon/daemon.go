@@ -8,6 +8,7 @@ import (
 
 	"github.com/gordonklaus/portaudio"
 	"github.com/realnikolaj/voicedaemon/internal/audio"
+	"github.com/realnikolaj/voicedaemon/internal/rtc"
 	"github.com/realnikolaj/voicedaemon/internal/stt"
 	"github.com/realnikolaj/voicedaemon/internal/tts"
 )
@@ -63,6 +64,8 @@ type Daemon struct {
 	idleMu sync.Mutex
 	idle   bool
 
+	rtcClient *rtc.Client
+	rtcCancel context.CancelFunc
 }
 
 // New creates a new daemon with all subsystems wired together.
@@ -286,8 +289,15 @@ func (d *Daemon) onQueueIdle() {
 }
 
 // onUtterance is called by the audio pipeline when VAD detects a complete utterance.
-// Sends the audio to Speaches via batch HTTP POST for transcription.
+// Skipped when WebSocket realtime is active (server handles VAD and transcription).
 func (d *Daemon) onUtterance(samples []float32) {
+	d.mu.Lock()
+	hasRTC := d.rtcClient != nil
+	d.mu.Unlock()
+	if hasRTC {
+		return
+	}
+
 	go func() {
 		text, err := d.sttClient.Transcribe(context.Background(), samples)
 		if err != nil {
@@ -309,6 +319,39 @@ func (d *Daemon) onUtterance(samples []float32) {
 	}()
 }
 
+// closeRTC tears down the active WebSocket session, if any.
+func (d *Daemon) closeRTC() {
+	d.mu.Lock()
+	client := d.rtcClient
+	cancel := d.rtcCancel
+	d.rtcClient = nil
+	d.rtcCancel = nil
+	d.mu.Unlock()
+
+	d.pipeline.SetAudioSink(nil)
+	if cancel != nil {
+		cancel()
+	}
+	if client != nil {
+		client.Close()
+	}
+}
+
+// rtcTranscriptLoop reads transcripts from the WebSocket data channel.
+func (d *Daemon) rtcTranscriptLoop(client *rtc.Client) {
+	for text := range client.Transcripts() {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		d.mu.Lock()
+		d.transcripts = append(d.transcripts, text)
+		d.mu.Unlock()
+		d.socketSrv.PushTranscript(text)
+		d.httpSrv.BroadcastTranscript(text)
+	}
+}
+
 // onSocketStart handles the "start" command from the socket.
 func (d *Daemon) onSocketStart() {
 	d.mu.Lock()
@@ -316,14 +359,44 @@ func (d *Daemon) onSocketStart() {
 	d.mu.Unlock()
 
 	d.leaveIdle()
+
+	rtcCfg := rtc.ClientConfig{
+		SpeachesURL:  d.cfg.SpeachesURL,
+		Model:        d.cfg.STTModel,
+		Language:     d.cfg.STTLanguage,
+		Logf:         d.logf,
+	}
+	client := rtc.NewClient(rtcCfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := client.Connect(ctx); err != nil {
+		d.logf("daemon: WebSocket connect failed, using batch HTTP: %v", err)
+		cancel()
+		d.pipeline.StartListening()
+		d.logf("daemon: recording started via batch HTTP (fallback)")
+		return
+	}
+
+	d.mu.Lock()
+	d.rtcClient = client
+	d.rtcCancel = cancel
+	d.mu.Unlock()
+
+	d.pipeline.SetAudioSink(func(frame []float32) {
+		if err := client.SendAudio(frame); err != nil {
+			d.logf("daemon: rtc SendAudio error: %v", err)
+		}
+	})
 	d.pipeline.StartListening()
-	d.logf("daemon: recording started via socket")
+	go d.rtcTranscriptLoop(client)
+
+	d.logf("daemon: recording started via WebSocket realtime")
 }
 
 // onSocketStop handles the "stop" command from the socket.
-// Returns all accumulated transcripts joined with spaces.
 func (d *Daemon) onSocketStop() string {
 	d.pipeline.StopListening()
+	d.closeRTC()
 
 	d.mu.Lock()
 	result := strings.Join(d.transcripts, " ")
@@ -338,6 +411,7 @@ func (d *Daemon) onSocketStop() string {
 // onSocketCancel handles the "cancel" command from the socket.
 func (d *Daemon) onSocketCancel() {
 	d.pipeline.StopListening()
+	d.closeRTC()
 
 	d.mu.Lock()
 	d.transcripts = nil
