@@ -364,6 +364,7 @@ func (d *Daemon) onSocketStart() {
 		SpeachesURL:  d.cfg.SpeachesURL,
 		Model:        d.cfg.STTModel,
 		Language:     d.cfg.STTLanguage,
+		VADSilenceMs: d.cfg.SilenceGapMS,
 		Logf:         d.logf,
 	}
 	client := rtc.NewClient(rtcCfg)

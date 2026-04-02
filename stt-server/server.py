@@ -47,6 +47,7 @@ MODEL = os.getenv("STT_MODEL", "deepdml/faster-whisper-large-v3-turbo-ct2")
 DEVICE = os.getenv("STT_DEVICE", "cuda")
 COMPUTE = os.getenv("STT_COMPUTE", "float16")
 LANGUAGE = os.getenv("STT_LANGUAGE", "en")
+CPU_THREADS = int(os.getenv("STT_CPU_THREADS", "6"))
 
 INPUT_RATE = 24000   # voicedaemon sends 24kHz int16 PCM
 TARGET_RATE = 16000  # Whisper and Silero expect 16kHz
@@ -59,8 +60,8 @@ log.info("Loading Silero VAD (ONNX, CPU)...")
 vad_model = load_silero_vad(onnx=True)
 log.info("Silero VAD ready")
 
-log.info("Loading Whisper: %s (%s/%s)...", MODEL, DEVICE, COMPUTE)
-whisper_model = WhisperModel(MODEL, device=DEVICE, compute_type=COMPUTE)
+log.info("Loading Whisper: %s (%s/%s, %d threads)...", MODEL, DEVICE, COMPUTE, CPU_THREADS)
+whisper_model = WhisperModel(MODEL, device=DEVICE, compute_type=COMPUTE, cpu_threads=CPU_THREADS)
 log.info("Whisper ready")
 
 
