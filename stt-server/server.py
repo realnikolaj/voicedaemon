@@ -27,6 +27,7 @@ import os
 import time
 
 import numpy as np
+import torch
 import websockets
 from faster_whisper import WhisperModel
 from silero_vad import load_silero_vad
@@ -143,7 +144,7 @@ class Session:
             chunk = f16k[pos : pos + VAD_CHUNK]
             pos += VAD_CHUNK
 
-            prob = float(vad_model(chunk, TARGET_RATE))
+            prob = float(vad_model(torch.from_numpy(chunk), TARGET_RATE))
 
             if prob >= self.threshold:
                 if not self.speaking:
