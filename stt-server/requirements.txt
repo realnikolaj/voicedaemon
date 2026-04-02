@@ -1,0 +1,3 @@
+websockets>=13.0
+faster-whisper>=1.1.0
+numpy

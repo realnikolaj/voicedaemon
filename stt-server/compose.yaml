@@ -1,0 +1,20 @@
+services:
+  stt:
+    build: .
+    ports:
+      - "2700:2700"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    environment:
+      - STT_MODEL=deepdml/faster-whisper-large-v3-turbo-ct2
+      - STT_DEVICE=cuda
+      - STT_COMPUTE=float16
+      - STT_LANGUAGE=en
+      # - STT_DEBUG=1
+    volumes:
+      # Share HuggingFace cache so Whisper model downloads once
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
+    restart: unless-stopped
