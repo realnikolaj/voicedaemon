@@ -30,6 +30,7 @@ import time
 import wave
 
 import numpy as np
+import torch
 import websockets
 from aiohttp import web
 from faster_whisper import WhisperModel
@@ -51,6 +52,8 @@ MODEL = os.getenv("STT_MODEL", "deepdml/faster-whisper-large-v3-turbo-ct2")
 DEVICE = os.getenv("STT_DEVICE", "cuda")
 COMPUTE = os.getenv("STT_COMPUTE", "float16")
 LANGUAGE = os.getenv("STT_LANGUAGE", "en")
+CPU_THREADS = int(os.getenv("STT_CPU_THREADS", "6"))
+NUM_WORKERS = int(os.getenv("STT_NUM_WORKERS", "2"))
 
 INPUT_RATE = 24000   # voicedaemon sends 24kHz int16 PCM
 TARGET_RATE = 16000  # Whisper and Silero expect 16kHz
@@ -63,8 +66,12 @@ log.info("Loading Silero VAD (ONNX, CPU)...")
 vad_model = load_silero_vad(onnx=True)
 log.info("Silero VAD ready")
 
-log.info("Loading Whisper: %s (%s/%s)...", MODEL, DEVICE, COMPUTE)
-whisper_model = WhisperModel(MODEL, device=DEVICE, compute_type=COMPUTE)
+log.info("Loading Whisper: %s (%s/%s, %d threads, %d workers)...",
+         MODEL, DEVICE, COMPUTE, CPU_THREADS, NUM_WORKERS)
+whisper_model = WhisperModel(
+    MODEL, device=DEVICE, compute_type=COMPUTE,
+    cpu_threads=CPU_THREADS, num_workers=NUM_WORKERS,
+)
 log.info("Whisper ready")
 
 
@@ -207,7 +214,7 @@ class Session:
             chunk = f16k[pos : pos + VAD_CHUNK]
             pos += VAD_CHUNK
 
-            prob = float(vad_model(chunk, TARGET_RATE))
+            prob = float(vad_model(torch.from_numpy(chunk), TARGET_RATE))
 
             if prob >= self.threshold:
                 if not self.speaking:
