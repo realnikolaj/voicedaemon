@@ -1,33 +1,37 @@
 #!/usr/bin/env python3
 """
-Minimal STT WebSocket server for voicedaemon.
+Minimal STT server for voicedaemon + studio content pipeline.
 
-Speaks the OpenAI Realtime API subset that voicedaemon's rtc.Client
-already understands. No framework, no compatibility layer beyond the
-six message types the client uses.
+Two doors into the same room:
+  1. WebSocket  — voicedaemon live streaming (VAD-driven, low latency)
+  2. HTTP POST  — studio batch transcription (whole files, word timestamps)
 
-Protocol (client → server):
-  session.update              — VAD config, language, model
-  input_audio_buffer.append   — base64 int16 PCM @ 24kHz
+WebSocket protocol (voicedaemon rtc.Client):
+  Client → Server: session.update, input_audio_buffer.append
+  Server → Client: session.created, session.updated,
+                   input_audio_buffer.speech_started/stopped,
+                   input_audio_buffer.committed,
+                   conversation.item.input_audio_transcription.completed
 
-Protocol (server → client):
-  session.created / session.updated
-  input_audio_buffer.speech_started / speech_stopped
-  input_audio_buffer.committed
-  conversation.item.input_audio_transcription.completed
+HTTP endpoint:
+  POST /v1/audio/transcriptions  — multipart WAV upload, returns word timestamps
+  Response matches OpenAI verbose_json format for zero-change consumer migration.
 
-Dependencies: websockets, faster-whisper, torch (CPU), numpy
+Dependencies: websockets, aiohttp, faster-whisper, silero-vad, numpy
 """
 
 import asyncio
 import base64
+import io
 import json
 import logging
 import os
 import time
+import wave
 
 import numpy as np
 import websockets
+from aiohttp import web
 from faster_whisper import WhisperModel
 from silero_vad import load_silero_vad
 
@@ -41,7 +45,8 @@ logging.basicConfig(
 # Configuration
 # ---------------------------------------------------------------------------
 HOST = os.getenv("STT_HOST", "0.0.0.0")
-PORT = int(os.getenv("STT_PORT", "2700"))
+WS_PORT = int(os.getenv("STT_PORT", "2700"))
+HTTP_PORT = int(os.getenv("STT_HTTP_PORT", "8000"))
 MODEL = os.getenv("STT_MODEL", "deepdml/faster-whisper-large-v3-turbo-ct2")
 DEVICE = os.getenv("STT_DEVICE", "cuda")
 COMPUTE = os.getenv("STT_COMPUTE", "float16")
@@ -79,9 +84,10 @@ def resample_24k_16k(samples: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Transcription (runs in thread pool to avoid blocking the event loop)
+# Shared transcription helpers
 # ---------------------------------------------------------------------------
-def _transcribe(audio: np.ndarray, language: str) -> tuple[str, float]:
+def _transcribe_live(audio: np.ndarray, language: str) -> tuple[str, float]:
+    """Live path: text only, no word timestamps."""
     t0 = time.monotonic()
     lang = None if language == "auto" else language
     segments, _ = whisper_model.transcribe(audio, language=lang, vad_filter=False)
@@ -89,9 +95,69 @@ def _transcribe(audio: np.ndarray, language: str) -> tuple[str, float]:
     return text, time.monotonic() - t0
 
 
-# ---------------------------------------------------------------------------
-# Session: one WebSocket connection, streaming VAD + transcription
-# ---------------------------------------------------------------------------
+def _transcribe_batch(audio: np.ndarray, language: str) -> dict:
+    """Batch path: full transcript with word-level timestamps."""
+    t0 = time.monotonic()
+    lang = None if language == "auto" else language
+    segments, info = whisper_model.transcribe(
+        audio, language=lang, vad_filter=True, word_timestamps=True
+    )
+    words = []
+    text_parts = []
+    for segment in segments:
+        text_parts.append(segment.text)
+        if segment.words:
+            for w in segment.words:
+                words.append({
+                    "word": w.word.strip(),
+                    "start": round(w.start, 3),
+                    "end": round(w.end, 3),
+                })
+    text = " ".join(text_parts).strip()
+    duration = len(audio) / TARGET_RATE
+    dt = time.monotonic() - t0
+    rtx = duration / dt if dt > 0 else 0
+    log.info("Batch (%.2fs audio, %.2fs decode, %.0fx RT): %s",
+             duration, dt, rtx, text[:80] + ("..." if len(text) > 80 else ""))
+    return {
+        "text": text,
+        "duration": round(duration, 2),
+        "language": info.language if info.language else lang or LANGUAGE,
+        "words": words,
+    }
+
+
+def _decode_wav(data: bytes) -> np.ndarray:
+    """Decode WAV bytes to float32 numpy array at 16kHz."""
+    with wave.open(io.BytesIO(data), "rb") as wf:
+        sr = wf.getframerate()
+        ch = wf.getnchannels()
+        sw = wf.getsampwidth()
+        raw = wf.readframes(wf.getnframes())
+
+    if sw == 2:
+        samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+    elif sw == 4:
+        samples = np.frombuffer(raw, dtype=np.int32).astype(np.float32) / 2147483648.0
+    else:
+        raise ValueError(f"Unsupported sample width: {sw}")
+
+    # Mix to mono if stereo
+    if ch > 1:
+        samples = samples.reshape(-1, ch).mean(axis=1)
+
+    # Resample to 16kHz if needed
+    if sr != TARGET_RATE:
+        n_out = int(len(samples) * TARGET_RATE / sr)
+        idx = np.linspace(0, len(samples) - 1, n_out)
+        samples = np.interp(idx, np.arange(len(samples)), samples).astype(np.float32)
+
+    return samples
+
+
+# ===========================================================================
+# Door 1: WebSocket — voicedaemon live streaming
+# ===========================================================================
 class Session:
     def __init__(self, ws):
         self.ws = ws
@@ -115,7 +181,6 @@ class Session:
         elif t == "input_audio_buffer.append":
             await self._on_audio(ev)
 
-    # -- session.update ------------------------------------------------
     async def _on_session_update(self, ev):
         s = ev.get("session", {})
         td = s.get("turn_detection", {})
@@ -129,7 +194,6 @@ class Session:
         )
         await self.send({"type": "session.updated"})
 
-    # -- audio processing + VAD ----------------------------------------
     async def _on_audio(self, ev):
         pcm = np.frombuffer(base64.b64decode(ev["audio"]), dtype=np.int16)
         f32 = pcm.astype(np.float32) / 32768.0
@@ -162,7 +226,6 @@ class Session:
 
         self.remainder = f16k[pos:]
 
-    # -- speech end → transcribe --------------------------------------
     async def _end_speech(self):
         self.speaking = False
         self.silence_chunks = 0
@@ -176,13 +239,12 @@ class Session:
         self.speech_buf = []
         vad_model.reset_states()
 
-        # Skip utterances shorter than 100ms
         if len(audio) < TARGET_RATE // 10:
             return
 
         loop = asyncio.get_running_loop()
         text, dt = await loop.run_in_executor(
-            None, _transcribe, audio, self.language
+            None, _transcribe_live, audio, self.language
         )
 
         if text:
@@ -195,12 +257,9 @@ class Session:
             })
 
 
-# ---------------------------------------------------------------------------
-# WebSocket handler
-# ---------------------------------------------------------------------------
-async def handler(ws):
+async def ws_handler(ws):
     addr = ws.remote_address
-    log.info("Connected: %s", addr)
+    log.info("WS connected: %s", addr)
     session = Session(ws)
     await session.send({"type": "session.created"})
     try:
@@ -210,14 +269,71 @@ async def handler(ws):
         pass
     finally:
         vad_model.reset_states()
-        log.info("Disconnected: %s", addr)
+        log.info("WS disconnected: %s", addr)
 
 
+# ===========================================================================
+# Door 2: HTTP POST — studio batch transcription
+# ===========================================================================
+async def http_transcribe(request: web.Request) -> web.Response:
+    """POST /v1/audio/transcriptions — OpenAI-compatible verbose_json."""
+    reader = await request.multipart()
+    audio_data = None
+    language = LANGUAGE
+
+    async for part in reader:
+        if part.name == "file":
+            audio_data = await part.read()
+        elif part.name == "language":
+            language = (await part.text()).strip() or LANGUAGE
+
+    if audio_data is None:
+        return web.json_response(
+            {"error": "missing 'file' field"}, status=400
+        )
+
+    try:
+        audio = _decode_wav(audio_data)
+    except Exception as e:
+        return web.json_response(
+            {"error": f"audio decode failed: {e}"}, status=400
+        )
+
+    log.info("Batch request: %.1fs audio, lang=%s", len(audio) / TARGET_RATE, language)
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, _transcribe_batch, audio, language)
+    return web.json_response(result)
+
+
+async def http_health(_request: web.Request) -> web.Response:
+    return web.json_response({"status": "ok", "model": MODEL})
+
+
+def create_http_app() -> web.Application:
+    app = web.Application(client_max_size=200 * 1024 * 1024)  # 200MB max upload
+    app.router.add_post("/v1/audio/transcriptions", http_transcribe)
+    app.router.add_get("/health", http_health)
+    return app
+
+
+# ===========================================================================
+# Main — both servers on the same event loop
+# ===========================================================================
 async def main():
-    log.info("STT server on %s:%d", HOST, PORT)
-    async with websockets.serve(handler, HOST, PORT, max_size=1 << 20):
-        log.info("Ready — waiting for connections")
-        await asyncio.Future()
+    # Start WebSocket server
+    log.info("WebSocket server on %s:%d", HOST, WS_PORT)
+    ws_server = await websockets.serve(ws_handler, HOST, WS_PORT, max_size=1 << 20)
+
+    # Start HTTP server
+    http_app = create_http_app()
+    runner = web.AppRunner(http_app)
+    await runner.setup()
+    site = web.TCPSite(runner, HOST, HTTP_PORT)
+    await site.start()
+    log.info("HTTP server on %s:%d", HOST, HTTP_PORT)
+
+    log.info("Ready — both doors open")
+    await asyncio.Future()
 
 
 if __name__ == "__main__":
