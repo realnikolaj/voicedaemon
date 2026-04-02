@@ -27,9 +27,9 @@ import os
 import time
 
 import numpy as np
-import torch
 import websockets
 from faster_whisper import WhisperModel
+from silero_vad import load_silero_vad
 
 log = logging.getLogger("stt")
 logging.basicConfig(
@@ -54,12 +54,8 @@ VAD_CHUNK = 512      # Silero v5: 512 samples @ 16kHz = 32ms
 # ---------------------------------------------------------------------------
 # Model loading (once, at startup)
 # ---------------------------------------------------------------------------
-torch.set_num_threads(1)
-
-log.info("Loading Silero VAD (CPU)...")
-vad_model, _ = torch.hub.load(
-    "snakers4/silero-vad", "silero_vad", trust_repo=True
-)
+log.info("Loading Silero VAD (ONNX, CPU)...")
+vad_model = load_silero_vad(onnx=True)
 log.info("Silero VAD ready")
 
 log.info("Loading Whisper: %s (%s/%s)...", MODEL, DEVICE, COMPUTE)
@@ -147,7 +143,7 @@ class Session:
             chunk = f16k[pos : pos + VAD_CHUNK]
             pos += VAD_CHUNK
 
-            prob = vad_model(torch.from_numpy(chunk), TARGET_RATE).item()
+            prob = float(vad_model(chunk, TARGET_RATE))
 
             if prob >= self.threshold:
                 if not self.speaking:
