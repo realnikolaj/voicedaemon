@@ -101,6 +101,11 @@ func (c *Client) Connect(ctx context.Context) error {
 		return fmt.Errorf("rtc: websocket dial: %w", err)
 	}
 
+	// Respond to server pings automatically to prevent keepalive timeout.
+	conn.SetPingHandler(func(data string) error {
+		return conn.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(5*time.Second))
+	})
+
 	c.mu.Lock()
 	c.conn = conn
 	c.mu.Unlock()
@@ -127,8 +132,9 @@ func (c *Client) Connect(ctx context.Context) error {
 func (c *Client) SendAudio(mono []float32) error {
 	c.mu.Lock()
 	conn := c.conn
+	closed := c.closed
 	c.mu.Unlock()
-	if conn == nil {
+	if conn == nil || closed {
 		return nil
 	}
 
@@ -247,9 +253,10 @@ func (c *Client) readLoop() {
 		if err != nil {
 			c.mu.Lock()
 			closed := c.closed
+			c.closed = true // stop SendAudio from spamming
 			c.mu.Unlock()
 			if !closed {
-				c.logf("rtc: websocket read: %v", err)
+				c.logf("rtc: websocket closed: %v", err)
 			}
 			return
 		}
